@@ -19,6 +19,11 @@ uv run main.py
 npx @modelcontextprotocol/inspector uv run main.py
 ```
 
+### Install with uvx
+```bash
+uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
+```
+
 ## Configuration
 
 ### OpenCode
