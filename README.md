@@ -14,6 +14,11 @@ uv sync
 uv run main.py
 ```
 
+## Debug
+```bash
+npx @modelcontextprotocol/inspector uv run main.py
+```
+
 ## Configuration
 
 ### OpenCode
