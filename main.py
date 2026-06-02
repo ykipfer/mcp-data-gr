@@ -1,11 +1,38 @@
-from difflib import SequenceMatcher
+from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("data-bs.ch")
 
-BASE_URL = "https://data.bs.ch/api/explore/v2.1"
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+# Read directly from the .env file next to this
+# module. The process environment is intentionally not consulted so an MCP
+# client cannot override the catalog via its config's env block.
+_env_path = Path(__file__).parent / ".env"
+if not _env_path.is_file():
+    raise RuntimeError(f"Missing .env file at {_env_path}")
+
+_config = _read_env_file(_env_path)
+DOMAIN = _config.get("DATA_PORTAL_DOMAIN", "").strip()
+
+if not DOMAIN:
+    raise RuntimeError(f"DATA_PORTAL_DOMAIN is not set in {_env_path}")
+
+DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
+BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
+
+mcp = FastMCP(DOMAIN)
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
@@ -38,67 +65,25 @@ def _simplify_dataset(data: dict) -> dict:
     }
 
 
-def _tokenize(text: str) -> list[str]:
-    return [
-        t
-        for t in text.lower().replace(".", " ").replace("-", " ").split()
-        if len(t) > 1
-    ]
-
-
-def _match_score(text: str, query: str) -> float:
-    if not text or not query:
-        return 0.0
-    text_lower = text.lower()
-    query_lower = query.lower()
-    if query_lower in text_lower:
-        return 1.0
-    text_tokens = _tokenize(text)
-    query_tokens = _tokenize(query)
-    if not query_tokens:
-        return 0.0
-    score = 0.0
-    for qt in query_tokens:
-        best = 0.0
-        for tt in text_tokens:
-            if qt == tt:
-                best = 1.0
-            elif len(qt) >= 3 and (qt in tt or tt in qt):
-                best = max(best, 0.8)
-            elif len(qt) >= 3 and len(tt) >= 3:
-                ratio = SequenceMatcher(None, qt, tt).ratio()
-                if ratio > 0.7:
-                    best = max(best, ratio * 0.6)
-        score += best
-    return score / len(query_tokens)
-
-
-def _score_dataset(dataset: dict, query: str) -> float:
-    metas = dataset.get("metas", {})
-    default = metas.get("default", {})
-    score = 0.0
-    title = _to_str(default.get("title"))
-    description = _to_str(default.get("description"))
-    theme = _to_str(default.get("theme"))
-    keywords = default.get("keyword", []) or []
-    publisher = _to_str(default.get("publisher"))
-    score += _match_score(title, query) * 3.0
-    score += _match_score(description, query) * 1.0
-    score += _match_score(theme, query) * 2.0
-    score += _match_score(publisher, query) * 1.5
-    for kw in keywords:
-        score += _match_score(str(kw), query) * 2.0
-    return score
+def _escape_odsql(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 @mcp.tool(
     title="Search Datasets",
-    description="Search and list available open datasets from data.bs.ch (Basel-Stadt open data portal). Use this to discover datasets by keyword, publisher, or theme.",
+    description=(
+        f"Search and list available open datasets from {DOMAIN}. Two modes: 'semantic' "
+        "(default) ranks the catalog by meaning using natural-language queries "
+        "(handles synonyms and other languages); 'lexical' does a classic full-text "
+        "match on the exact terms. Use semantic for conceptual discovery, lexical for "
+        "precise term/name lookups."
+    ),
 )
 async def get_datasets(
     limit: int = 10,
     offset: int = 0,
     search: str | None = None,
+    search_mode: str = "semantic",
     refine: str | None = None,
     exclude: str | None = None,
     order_by: str | None = None,
@@ -106,22 +91,30 @@ async def get_datasets(
     include_app_metas: bool = False,
 ) -> dict:
     """
-    List available datasets from data.bs.ch with optional filtering.
+    List available datasets from the configured catalog with optional filtering.
 
     Args:
         limit: Number of items to return (default: 10, max: 100)
         offset: Index of first item to return (default: 0)
-        search: Fuzzy search string to filter datasets (searches title, description, theme, keywords, publisher)
+        search: Search string. Interpreted according to search_mode.
+        search_mode: "semantic" (default) ranks the whole catalog by meaning via
+            vector_similarity (best for natural-language/conceptual queries, also
+            matches synonyms and other languages); "lexical" filters by exact
+            full-text match. Ignored when search is empty.
         refine: Facet filter to limit results (e.g., "publisher:Statistisches Amt")
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
-        order_by: Field to sort results (e.g., "modified desc", "title asc")
+        order_by: Field to sort results (e.g., "modified desc", "title asc").
+            Ignored in semantic mode, where results are ordered by relevance.
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_app_metas: Include application metadata in response
 
     Returns:
-        Dictionary with total_count and results array containing dataset metadata
+        Dictionary with total_count and results array containing dataset metadata.
+        Note: in semantic mode the catalog is ranked rather than filtered, so
+        total_count reflects the whole catalog and the top results are the most
+        relevant.
     """
-    params: dict[str, str | int] = {"limit": 100, "offset": 0}
+    params: dict[str, str | int] = {"limit": min(limit, 100), "offset": offset}
     if refine:
         params["refine"] = refine
     if exclude:
@@ -130,41 +123,21 @@ async def get_datasets(
         params["timezone"] = timezone
     if include_app_metas:
         params["include_app_metas"] = "true"
-    all_results = []
-    page_offset = 0
-    while True:
-        params["offset"] = page_offset
-        params["limit"] = 100
-        data = await fetch("/catalog/datasets", params)
-        results = data.get("results", [])
-        all_results.extend(results)
-        if len(results) < 100:
-            break
-        page_offset += 100
-    results = all_results
-    if search:
-        scored = [(ds, _score_dataset(ds, search)) for ds in results]
-        scored = [(ds, s) for ds, s in scored if s > 0.3]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        results = [ds for ds, _ in scored]
-    if order_by:
-        reverse = False
-        field = order_by
-        if order_by.endswith(" desc"):
-            field = order_by[:-5].strip()
-            reverse = True
-        elif order_by.endswith(" asc"):
-            field = order_by[:-4].strip()
-            reverse = False
-        results.sort(
-            key=lambda ds: _simplify_dataset(ds).get(field, "") or "",
-            reverse=reverse,
-        )
-    total = len(results)
-    paginated = results[offset : offset + limit]
+    normalized_search = " ".join(search.split()) if search else ""
+    if normalized_search:
+        query = _escape_odsql(normalized_search)
+        if search_mode == "lexical":
+            params["where"] = f'search("{query}")'
+            if order_by:
+                params["order_by"] = order_by
+        else:
+            params["order_by"] = f'vector_similarity("{query}") desc'
+    elif order_by:
+        params["order_by"] = order_by
+    data = await fetch("/catalog/datasets", params)
     return {
-        "total_count": total,
-        "results": [_simplify_dataset(d) for d in paginated],
+        "total_count": data.get("total_count"),
+        "results": [_simplify_dataset(d) for d in data.get("results", [])],
     }
 
 
