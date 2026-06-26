@@ -89,6 +89,7 @@ async def get_datasets(
     order_by: str | None = None,
     timezone: str | None = None,
     include_app_metas: bool = False,
+    lang: str = "de",
 ) -> dict:
     """
     List available datasets from the configured catalog with optional filtering.
@@ -121,6 +122,8 @@ async def get_datasets(
         params["exclude"] = exclude
     if timezone:
         params["timezone"] = timezone
+    if lang:
+        params["lang"] = lang
     if include_app_metas:
         params["include_app_metas"] = "true"
     normalized_search = " ".join(search.split()) if search else ""
@@ -145,17 +148,18 @@ async def get_datasets(
     title="Get Dataset Metadata",
     description="Get detailed metadata for a specific dataset including field definitions, schema, publisher info, and record count. Use this to understand a dataset's structure before querying records.",
 )
-async def get_dataset(dataset_id: str) -> dict:
+async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
     """
     Get detailed metadata for a specific dataset.
 
     Args:
         dataset_id: The dataset identifier (e.g., "100113")
+        lang: The language of the dataset metadata (default: "de")
 
     Returns:
         Dataset metadata including title, description, theme, keywords, etc.
     """
-    data = await fetch(f"/catalog/datasets/{dataset_id}")
+    data = await fetch(f"/catalog/datasets/{dataset_id}", params={"lang": lang})
     metas = data.get("metas", {})
     return {
         "dataset_id": data.get("dataset_id"),
@@ -168,7 +172,7 @@ async def get_dataset(dataset_id: str) -> dict:
         "language": metas.get("default", {}).get("language", []),
         "records_count": data.get("metas", {}).get("explore", {}).get("records_count"),
         "fields": [
-            {"name": f.get("name"), "type": f.get("type")}
+            {"name": f.get("name"), "type": f.get("type"), "description": f.get("description")}
             for f in data.get("fields", [])
         ],
     }
@@ -268,6 +272,7 @@ async def export_dataset_url(
     dataset_id: str,
     format: str = "json",
     where: str | None = None,
+    lang: str = "de",
 ) -> str:
     """
     Get the export URL for downloading a dataset in various formats.
@@ -276,6 +281,7 @@ async def export_dataset_url(
         dataset_id: The dataset identifier (e.g., "100113")
         format: Export format: csv, json, geojson, xlsx, shp, parquet, gpx, kml, rdfxml, jsonld, turtle
         where: Optional ODSQL WHERE clause to filter exported records
+        lang: The language of the dataset metadata (default: "de")
 
     Returns:
         Full URL to download the exported dataset
@@ -283,6 +289,8 @@ async def export_dataset_url(
     url = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
     if where:
         url += f"?where={where}"
+    if lang:
+        url += f"&lang={lang}"
     return url
 
 

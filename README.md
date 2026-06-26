@@ -41,7 +41,45 @@ The full API base URL is built as
 The `.env` file is committed, so a fork carries its
 catalog choice through `uvx` installs as well.
 
+## Docker
+
+Build the image:
+
+```bash
+docker build -t mcp-data-bs .
+```
+
+Then use it in any MCP client that supports stdio:
+
+```json
+{
+  "mcpServers": {
+    "data-bs": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "mcp-data-bs"]
+    }
+  }
+}
+```
+
+To change the data portal domain, edit `.env` and rebuild the image.
+
 ## Configuration
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "data-bs": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "mcp-data-bs"]
+    }
+  }
+}
+```
 
 ### OpenCode
 
