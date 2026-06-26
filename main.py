@@ -32,7 +32,7 @@ if not DOMAIN:
 DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
 BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 
-mcp = FastMCP(DOMAIN, host="0.0.0.0", port=8000)
+mcp = FastMCP(DOMAIN)
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
@@ -295,7 +295,7 @@ async def export_dataset_url(
 
 
 def main():
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
