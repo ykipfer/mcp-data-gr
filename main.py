@@ -1,5 +1,6 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlencode
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -309,12 +310,21 @@ async def get_facets(facet: str | None = None) -> dict:
 
 @mcp.tool(
     title="Get Export URL",
-    description="Generate a download URL for exporting a dataset in various formats (CSV, JSON, GeoJSON, XLSX, Shapefile, Parquet, etc.). Use this when you need to download or share dataset exports.",
+    description=(
+        "Generate a download URL for exporting a dataset in various formats. "
+        "Supports filtering, aggregation, and sorting via ODSQL — no row limit. "
+        "Note: the URL is only useful if the client can fetch it directly. "
+        "If network access is restricted, use get_export instead."
+    ),
 )
 async def export_dataset_url(
     dataset_id: str,
-    format: str = "json",
+    format: Literal["csv", "json", "geojson", "xlsx", "shp", "parquet"] = "json",
+    select: str | None = None,
     where: str | None = None,
+    group_by: str | None = None,
+    order_by: str | None = None,
+    limit: int | None = None,
     lang: str = "de",
 ) -> str:
     """
@@ -322,19 +332,24 @@ async def export_dataset_url(
 
     Args:
         dataset_id: The dataset identifier (e.g., "100113")
-        format: Export format: csv, json, geojson, xlsx, shp, parquet, gpx, kml, rdfxml, jsonld, turtle
-        where: Optional ODSQL WHERE clause to filter exported records
-        lang: The language of the dataset metadata (default: "de")
+        format: Export format (csv, json, geojson, xlsx, shp, parquet)
+        select: Select expression for fields/aggregations
+        where: ODSQL WHERE clause to filter exported records
+        group_by: Grouping expression for aggregations
+        order_by: Sort expression
+        limit: Max number of rows to export
+        lang: Language for metadata (default: "de"). CSV exports use BOM;
+            read with utf-8-sig encoding.
 
     Returns:
         Full URL to download the exported dataset
     """
-    url = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
-    if where:
-        url += f"?where={where}"
-    if lang:
-        url += f"&lang={lang}"
-    return url
+    base = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
+    query = {k: v for k, v in {
+        "select": select, "where": where, "group_by": group_by,
+        "order_by": order_by, "limit": limit, "lang": lang,
+    }.items() if v is not None}
+    return f"{base}?{urlencode(query)}" if query else base
 
 
 def main():
