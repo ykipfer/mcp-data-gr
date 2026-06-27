@@ -1,7 +1,9 @@
 from pathlib import Path
+from typing import Annotated
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -207,7 +209,16 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
 
 @mcp.tool(
     title="Query Dataset Records",
-    description="Query and filter records from a dataset using ODSQL syntax. Use this to retrieve actual data from a dataset with optional WHERE clauses, ordering, and pagination.",
+    description=(
+        "Query and filter records from a dataset using ODSQL syntax. "
+        "Limited to 100 rows without group_by (use get_export for larger result sets). "
+        "ODSQL tips: use backtick-quoted field names for fields starting with a digit "
+        "or matching reserved words (e.g. `25_29_jahre`, `year`). "
+        "Date literals use date'YYYY-MM-DD' (not quoted strings). "
+        "For date fields, prefer year(field)=2024 or refine:field:2024. "
+        "Geo functions (within_distance, intersects, in_bbox) and text functions "
+        "(search, startswith) are supported in WHERE clauses."
+    ),
 )
 async def get_records(
     dataset_id: str,
@@ -215,8 +226,8 @@ async def get_records(
     where: str | None = None,
     group_by: str | None = None,
     order_by: str | None = None,
-    limit: int = 10,
-    offset: int = 0,
+    limit: Annotated[int, Field(ge=1, le=20000)] = 10,
+    offset: Annotated[int, Field(ge=0)] = 0,
     refine: str | None = None,
     exclude: str | None = None,
     lang: str | None = None,
@@ -228,22 +239,27 @@ async def get_records(
 
     Args:
         dataset_id: The dataset identifier (e.g., "100113")
-        select: Select expression to add/remove/change fields (e.g., "size", "size * 2 as bigger_size", "*")
-        where: ODSQL WHERE clause (e.g., "pm25 > 10", "time >= '2020-01-01'")
+        select: Select expression (e.g., "sum(`25_29_jahre`)", "avg(wert) as mean")
+        where: ODSQL WHERE clause (e.g., "pm25 > 10", "zeit >= date'2020-01-01'",
+            "year(jahr) = 2024", "search(gemeinde, 'Brail')")
         group_by: Grouping expression for aggregations (e.g., "city_field as city")
-        order_by: Field to order results by (e.g., "time DESC", "pm25 ASC")
-        limit: Number of items to return (default: 10, max: 100, or 20000 with group_by)
+        order_by: Sort expression. With aggregations, put the aggregate first
+            (e.g., "avg(x) desc, gender" not "gender, avg(x) desc")
+        limit: Number of items to return (default: 10, max: 100 without group_by,
+            max: 20000 with group_by). Use get_export for larger result sets.
         offset: Index of first item to return (default: 0)
-        refine: Facet filter to limit results (e.g., "city:Paris")
+        refine: Facet filter to limit results (e.g., "city:Paris", "jahr:2024")
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
         lang: Language for formatting (e.g., "en", "de", "fr")
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_links: Include HATEOAS links in response
 
     Returns:
-        Dictionary with total_count and results array containing record data
+        Dictionary with total_count and results array containing record data.
+        If total_count > len(results), consider using get_export instead.
     """
-    params: dict[str, str | int] = {"limit": min(limit, 20000), "offset": offset}
+    max_limit = 20000 if group_by else 100
+    params: dict[str, str | int] = {"limit": min(limit, max_limit), "offset": offset}
     if select:
         params["select"] = select
     if where:
