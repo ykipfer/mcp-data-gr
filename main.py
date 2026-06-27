@@ -283,16 +283,21 @@ async def get_records(
 
 
 @mcp.tool(
-    title="Get Facet Values",
-    description="Get available filter values for categorizing datasets. Useful for discovering publishers, keywords, themes, or other facets to refine dataset searches.",
+    title="Get Catalog Facets",
+    description=(
+        "Get available filter values for categorizing datasets in the catalog "
+        "(publisher, theme, keyword, etc.). For field-level facets within a "
+        "specific dataset (e.g. all municipalities or categories), use "
+        "get_dataset_facets instead."
+    ),
 )
 async def get_facets(facet: str | None = None) -> dict:
     """
     Get available facet values for filtering datasets.
 
     Args:
-        facet: Specific facet to retrieve: "publisher", "keyword", "theme", "features", "modified", "language"
-               If None, returns all facets
+        facet: Specific facet to retrieve: "publisher", "keyword", "theme",
+            "features", "modified", "language". If None, returns all facets.
 
     Returns:
         Dictionary with facet name and array of values with counts
@@ -306,6 +311,37 @@ async def get_facets(facet: str | None = None) -> dict:
             if f["name"] == facet:
                 return {"facet": facet, "values": f.get("facets", [])}
     return data
+
+
+@mcp.tool(
+    title="Get Dataset Field Facets",
+    description=(
+        "List the facet values of a dataset's fields (dimension members, e.g. all "
+        "municipalities or categories). Use before building WHERE/refine clauses to "
+        "verify exact spellings and available values."
+    ),
+)
+async def get_dataset_facets(
+    dataset_id: str,
+    facet: str | None = None,
+    lang: str = "de",
+) -> dict:
+    """
+    Get facet values for fields within a specific dataset.
+
+    Args:
+        dataset_id: The dataset identifier (e.g., "100113")
+        facet: Specific field name to get facets for. If None, returns all field facets.
+        lang: Language for metadata (default: "de")
+
+    Returns:
+        Dictionary with facet_groups array containing field names and their values
+    """
+    params: dict[str, str | int] = {"lang": lang, "limit": 0}
+    if facet:
+        params["facet"] = facet
+    data = await fetch(f"/catalog/datasets/{dataset_id}/records", params)
+    return {"facets": data.get("facet_groups", [])}
 
 
 @mcp.tool(
@@ -350,6 +386,46 @@ async def export_dataset_url(
         "order_by": order_by, "limit": limit, "lang": lang,
     }.items() if v is not None}
     return f"{base}?{urlencode(query)}" if query else base
+
+
+@mcp.tool(
+    title="Fetch Export Data",
+    description=(
+        "Fetch filtered/aggregated records server-side and return them inline (JSON). "
+        "No row limit. Use this instead of get_records when you need more than 100 rows "
+        "or when the client cannot fetch export URLs directly."
+    ),
+)
+async def get_export(
+    dataset_id: str,
+    select: str | None = None,
+    where: str | None = None,
+    group_by: str | None = None,
+    order_by: str | None = None,
+    limit: int | None = None,
+    lang: str = "de",
+) -> dict:
+    """
+    Fetch export data server-side and return inline.
+
+    Args:
+        dataset_id: The dataset identifier
+        select: Select expression for fields/aggregations
+        where: ODSQL WHERE clause
+        group_by: Grouping expression
+        order_by: Sort expression
+        limit: Max rows to return
+        lang: Language for metadata (default: "de")
+
+    Returns:
+        Dictionary with count and results array
+    """
+    params = {k: v for k, v in {
+        "select": select, "where": where, "group_by": group_by,
+        "order_by": order_by, "limit": limit, "lang": lang,
+    }.items() if v is not None}
+    data = await fetch(f"/catalog/datasets/{dataset_id}/exports/json", params)
+    return {"count": len(data) if isinstance(data, list) else None, "results": data}
 
 
 def main():
