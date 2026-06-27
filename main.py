@@ -35,10 +35,18 @@ BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 mcp = FastMCP(DOMAIN, host="0.0.0.0", port=8000)
 
 
-async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
+async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict | list:
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
         response = await client.get(endpoint, params=params)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            try:
+                err = response.json()
+            except Exception:
+                err = {"message": response.text}
+            raise RuntimeError(
+                f"ODS {response.status_code} {err.get('error_code', 'Error')}: "
+                f"{err.get('message', response.text)}"
+            )
         return response.json()
 
 
