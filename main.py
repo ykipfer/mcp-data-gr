@@ -77,6 +77,20 @@ def _escape_odsql(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+ODS_RESERVED = {
+    "year", "month", "day", "hour", "minute", "second", "count", "sum",
+    "avg", "min", "max", "range", "top", "distinct", "group", "select",
+    "where", "not", "and", "or", "as", "by", "asc", "desc", "null",
+    "true", "false", "like", "in", "date", "datetime", "from", "limit", "offset",
+}
+
+
+def _odsql_safe(name: str) -> str:
+    if name and (name[0].isdigit() or name.lower() in ODS_RESERVED):
+        return f"`{name}`"
+    return name
+
+
 @mcp.tool(
     title="Search Datasets",
     description=(
@@ -180,7 +194,12 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
         "language": metas.get("default", {}).get("language", []),
         "records_count": data.get("metas", {}).get("explore", {}).get("records_count"),
         "fields": [
-            {"name": f.get("name"), "type": f.get("type"), "description": f.get("description")}
+            {
+                "name": f.get("name"),
+                "odsql_name": _odsql_safe(f.get("name", "")),
+                "type": f.get("type"),
+                "description": f.get("description"),
+            }
             for f in data.get("fields", [])
         ],
     }
