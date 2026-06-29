@@ -1,0 +1,13 @@
+FROM python:3.13-slim AS base
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY main.py .env README.md ./
+RUN uv sync --frozen --no-dev
+
+ENTRYPOINT ["uv", "run", "main.py"]

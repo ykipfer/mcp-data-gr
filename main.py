@@ -337,11 +337,11 @@ async def get_dataset_facets(
     Returns:
         Dictionary with facet_groups array containing field names and their values
     """
-    params: dict[str, str | int] = {"lang": lang, "limit": 0}
+    params: dict[str, str | int] = {"lang": lang}
     if facet:
         params["facet"] = facet
-    data = await fetch(f"/catalog/datasets/{dataset_id}/records", params)
-    return {"facets": data.get("facet_groups", [])}
+    data = await fetch(f"/catalog/datasets/{dataset_id}/facets", params)
+    return {"facets": data.get("facets", [])}
 
 
 @mcp.tool(
