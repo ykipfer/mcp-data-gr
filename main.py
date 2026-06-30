@@ -195,7 +195,7 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
         "publisher": metas.get("default", {}).get("publisher"),
         "modified": metas.get("default", {}).get("modified"),
         "language": metas.get("default", {}).get("language", []),
-        "records_count": data.get("metas", {}).get("explore", {}).get("records_count"),
+        "records_count": data.get("metas", {}).get("default", {}).get("records_count"),
         "fields": [
             {
                 "name": f.get("name"),
