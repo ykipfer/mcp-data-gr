@@ -363,10 +363,11 @@ WantedBy=multi-user.target
 
 # Teil B: Neue Tool-Vorschläge (Basis OpenAPI)
 
-Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgesetzt (nicht Teil der Befundliste, sondern Erweiterungsvorschläge; auf Zuruf umsetzbar).
+Status: **alle umgesetzt** (Commit folgt auf 03e9761). Die vier neuen Tools sind registriert (`get_record`, `get_dataset_attachments`, `list_export_formats`, `export_catalog_url`), die zwei Erweiterungen (B5, B6) in die bestehenden Tools eingebaut; alle offline mit gemocktem `fetch` bzw. als reine URL-Builder verifiziert. Live-Verifikation gegen data.gr.ch steht aus (Netzzugriff nur über den MCP-Connector, der die alte Serverversion fährt).
 
 ## B1. get_record
 
+- Umsetzung: **umgesetzt** als Tool `get_record(dataset_id, record_id, select?, lang="de")` auf GET .../records/{record_id}.
 - Zweck: Einzelnen Record über seine ID holen (Detailansicht, Nachschlagen nach vorheriger Suche).
 - Endpoint: GET /catalog/datasets/{dataset_id}/records/{record_id} (operationId getRecord)
 - Parameter: dataset_id (string, Pflicht), record_id (string, Pflicht), select (string, optional), lang (string, optional)
@@ -375,6 +376,7 @@ Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgese
 
 ## B2. get_dataset_attachments
 
+- Umsetzung: **umgesetzt** als Tool `get_dataset_attachments(dataset_id)`; extrahiert das `attachments`-Array aus der Antwort.
 - Zweck: Anhänge eines Datensatzes auflisten (Methodik-PDFs, Codelisten, Erläuterungen).
 - Endpoint: GET /catalog/datasets/{dataset_id}/attachments (operationId getDatasetAttachments)
 - Parameter: dataset_id (string, Pflicht)
@@ -383,6 +385,7 @@ Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgese
 
 ## B3. list_export_formats
 
+- Umsetzung: **umgesetzt** als Tool `list_export_formats(dataset_id)`; leitet die Formatnamen aus den `links`-Hrefs ab (letztes Pfadsegment, gefiltert auf `/exports/`).
 - Zweck: Tatsächlich verfügbare Exportformate pro Datensatz abfragen statt raten.
 - Endpoint: GET /catalog/datasets/{dataset_id}/exports (operationId listDatasetExportFormats)
 - Parameter: dataset_id (string, Pflicht)
@@ -391,6 +394,7 @@ Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgese
 
 ## B4. export_catalog_url
 
+- Umsetzung: **umgesetzt** als Tool `export_catalog_url(format="csv"|"json"|"xlsx", select?, where?, order_by?, limit?)`; reiner URL-Builder auf /catalog/exports/{format}. Format-Literal auf die praxisrelevanten Datei-Inventarformate beschränkt (die dcat_ap_*-Formate der Spec bewusst weggelassen, YAGNI).
 - Zweck: Den gesamten Katalog als Datei exportieren (Inventar, Reporting).
 - Endpoint: GET /catalog/exports/{format} (operationId exportDatasets; Formate u.a. csv, xls, json, dcat_ap_ch)
 - Parameter: format (enum, Pflicht), select/where/order_by/limit (string/int, optional)
@@ -399,6 +403,7 @@ Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgese
 
 ## B5. Erweiterung get_dataset_facets um where/refine
 
+- Umsetzung: **umgesetzt**. `get_dataset_facets` hat jetzt zusätzlich `where`, `refine`, `exclude`.
 - Zweck: Facettenwerte im Kontext eines Filters zählen (z.B. Gemeinden, die 2024 Werte haben).
 - Endpoint: GET /catalog/datasets/{dataset_id}/facets unterstützt laut Spec bereits where, refine, exclude, timezone; das Tool exponiert nur facet und lang (main.py:324-344).
 - Parameter (neu): where (string, optional), refine (string, optional), exclude (string, optional)
@@ -407,6 +412,7 @@ Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgese
 
 ## B6. Erweiterung export_dataset_url um Format-Detailparameter
 
+- Umsetzung: **teilweise umgesetzt** (bewusst nach YAGNI/Grounding beschränkt). `export_dataset_url` hat jetzt `use_labels`, `epsg`, `compressed` — die drei Parameter, die laut Spec am generischen Endpoint `/exports/{format}` gültig sind und den URL-Builder ohne Format-Verzweigung ergänzen (Bool-Werte werden korrekt als `true`/`false` kodiert). `delimiter` und `with_bom` wurden **weggelassen**: sie sind laut v2.1-Spec nur am separaten Sub-Endpoint `/exports/csv` dokumentiert; sie an die `{format}`-URL zu hängen wäre nicht spec-gedeckt (Grounding). Der Excel-Anwendungsfall ist ohnehin abgedeckt, da CSV-Exporte seit v2.1 per Default ein BOM enthalten (v2.1-Changelog).
 - Zweck: Praxistaugliche CSV/Geo-Exporte.
 - Endpoint: GET .../exports/csv (delimiter, list_separator, quote_all, with_bom), GET .../exports/{format} (use_labels, epsg, compressed)
 - Parameter (neu, alle optional): delimiter (enum ;,|\t), with_bom (bool), use_labels (bool), epsg (int), compressed (bool)

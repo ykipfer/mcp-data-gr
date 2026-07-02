@@ -251,6 +251,28 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
 
 
 @mcp.tool(
+    title="Get Dataset Attachments",
+    description=(
+        "List a dataset's attached files (methodology PDFs, code lists, notes). "
+        "Use when a question about definitions or methodology cannot be answered "
+        "from the records alone."
+    ),
+)
+async def get_dataset_attachments(dataset_id: str) -> dict:
+    """
+    List the attachments published alongside a dataset.
+
+    Args:
+        dataset_id: The dataset identifier (e.g., "100113")
+
+    Returns:
+        Dictionary with an attachments array (each with href and metas).
+    """
+    data = await fetch(f"/catalog/datasets/{dataset_id}/attachments")
+    return {"attachments": data.get("attachments", [])}
+
+
+@mcp.tool(
     title="Query Dataset Records",
     description=(
         "Query and filter records from a dataset using ODSQL syntax. "
@@ -329,6 +351,35 @@ async def get_records(
 
 
 @mcp.tool(
+    title="Get Single Record",
+    description=(
+        "Fetch one record by its record_id (the `_id` returned by get_records). "
+        "Use to retrieve a single row in full without re-running the query."
+    ),
+)
+async def get_record(
+    dataset_id: str,
+    record_id: str,
+    select: str | None = None,
+    lang: str = "de",
+) -> dict:
+    """
+    Get a single record of a dataset by its identifier.
+
+    Args:
+        dataset_id: The dataset identifier (e.g., "100113")
+        record_id: The record identifier (the "_id" field from get_records)
+        select: Select expression to limit returned fields
+        lang: Language for formatting (default: "de")
+
+    Returns:
+        The record object with its fields.
+    """
+    params = {k: v for k, v in {"select": select, "lang": lang}.items() if v is not None}
+    return await fetch(f"/catalog/datasets/{dataset_id}/records/{record_id}", params)
+
+
+@mcp.tool(
     title="Get Catalog Facets",
     description=(
         "Get available filter values for categorizing datasets in the catalog "
@@ -372,6 +423,9 @@ async def get_facets(facet: str | None = None) -> dict:
 async def get_dataset_facets(
     dataset_id: str,
     facet: str | None = None,
+    where: str | None = None,
+    refine: str | None = None,
+    exclude: str | None = None,
     lang: str = "de",
 ) -> dict:
     """
@@ -380,16 +434,47 @@ async def get_dataset_facets(
     Args:
         dataset_id: The dataset identifier (e.g., "100113")
         facet: Specific field name to get facets for. If None, returns all field facets.
+        where: ODSQL WHERE clause to restrict the records the facets are computed on
+        refine: Facet filter to restrict the counted records (e.g., "jahr:2024")
+        exclude: Facet filter to exclude values from the counted records
         lang: Language for metadata (default: "de")
 
     Returns:
-        Dictionary with facet_groups array containing field names and their values
+        Dictionary with facets array containing field names and their values
     """
     params: dict[str, str | int] = {"lang": lang}
     if facet:
         params["facet"] = facet
+    if where:
+        params["where"] = where
+    if refine:
+        params["refine"] = refine
+    if exclude:
+        params["exclude"] = exclude
     data = await fetch(f"/catalog/datasets/{dataset_id}/facets", params)
     return {"facets": data.get("facets", [])}
+
+
+@mcp.tool(
+    title="List Export Formats",
+    description=(
+        "List the export formats a specific dataset actually supports (e.g. shp/geojson "
+        "only exist for geo datasets). Check before building an export_dataset_url."
+    ),
+)
+async def list_export_formats(dataset_id: str) -> dict:
+    """
+    List the export formats available for a dataset.
+
+    Args:
+        dataset_id: The dataset identifier (e.g., "100113")
+
+    Returns:
+        Dictionary with a formats array (e.g., ["csv", "json", "xlsx", ...]).
+    """
+    data = await fetch(f"/catalog/datasets/{dataset_id}/exports")
+    formats = [l["href"].rsplit("/", 1)[-1] for l in data.get("links", []) if "/exports/" in l.get("href", "")]
+    return {"formats": formats}
 
 
 @mcp.tool(
@@ -410,6 +495,9 @@ async def export_dataset_url(
     order_by: str | None = None,
     limit: int | None = None,
     lang: str = "de",
+    use_labels: bool | None = None,
+    epsg: int | None = None,
+    compressed: bool | None = None,
 ) -> str:
     """
     Get the export URL for downloading a dataset in various formats.
@@ -424,14 +512,54 @@ async def export_dataset_url(
         limit: Max number of rows to export
         lang: Language for metadata (default: "de"). CSV exports use BOM;
             read with utf-8-sig encoding.
+        use_labels: Use human-readable field labels instead of technical names
+        epsg: Coordinate system for geo exports (e.g., 2056 for Swiss LV95;
+            default on the API is 4326 / WGS84)
+        compressed: Return the export as a zip archive
 
     Returns:
         Full URL to download the exported dataset
     """
     base = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
-    query = {k: v for k, v in {
+    query = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in {
         "select": select, "where": where, "group_by": group_by,
         "order_by": order_by, "limit": limit, "lang": lang,
+        "use_labels": use_labels, "epsg": epsg, "compressed": compressed,
+    }.items() if v is not None}
+    return f"{base}?{urlencode(query)}" if query else base
+
+
+@mcp.tool(
+    title="Get Catalog Export URL",
+    description=(
+        "Generate a download URL for the whole dataset catalog (an inventory of all "
+        "datasets) as csv, json or xlsx. Supports ODSQL filtering/sorting over catalog "
+        "metadata. Use for 'list all datasets' style requests instead of paging get_datasets."
+    ),
+)
+async def export_catalog_url(
+    format: Literal["csv", "json", "xlsx"] = "csv",
+    select: str | None = None,
+    where: str | None = None,
+    order_by: str | None = None,
+    limit: int | None = None,
+) -> str:
+    """
+    Get the export URL for downloading the dataset catalog as a file.
+
+    Args:
+        format: Export format (csv, json, xlsx)
+        select: Select expression over catalog metadata fields
+        where: ODSQL WHERE clause over catalog metadata
+        order_by: Sort expression
+        limit: Max number of catalog entries to export
+
+    Returns:
+        Full URL to download the catalog export.
+    """
+    base = f"{BASE_URL}/catalog/exports/{format}"
+    query = {k: v for k, v in {
+        "select": select, "where": where, "order_by": order_by, "limit": limit,
     }.items() if v is not None}
     return f"{base}?{urlencode(query)}" if query else base
 

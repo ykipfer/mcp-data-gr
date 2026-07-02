@@ -156,11 +156,26 @@ results at 100 rows; use `get_export` for more.
 get_records(dataset_id="100113", where="pm25 > 10", limit=100, order_by="time DESC")
 ```
 
-### `get_dataset_facets`
-List the facet values of a dataset's fields (dimension members).
+### `get_record`
+Fetch a single record by its `_id` (as returned by `get_records`).
 
 ```
-get_dataset_facets(dataset_id="100113", facet="gemeinde")
+get_record(dataset_id="100113", record_id="abc123")
+```
+
+### `get_dataset_attachments`
+List a dataset's attached files (methodology PDFs, code lists).
+
+```
+get_dataset_attachments(dataset_id="100113")
+```
+
+### `get_dataset_facets`
+List the facet values of a dataset's fields (dimension members). Optionally restrict
+the counted records with `where` / `refine` / `exclude`.
+
+```
+get_dataset_facets(dataset_id="100113", facet="gemeinde", refine="jahr:2024")
 ```
 
 ### `get_facets`
@@ -178,11 +193,26 @@ capped maximum when `limit` is omitted).
 get_export(dataset_id="100113", group_by="gemeinde", select="gemeinde, sum(`anzahl`) as total")
 ```
 
-### `export_dataset_url`
-Get download URL for dataset export.
+### `list_export_formats`
+List the export formats a specific dataset actually supports.
 
 ```
-export_dataset_url(dataset_id="100113", format="csv", where="sensornr=240")
+list_export_formats(dataset_id="100113")
+```
+
+### `export_dataset_url`
+Get download URL for dataset export. Optional `use_labels`, `epsg` (e.g. `2056` for
+Swiss LV95) and `compressed` for geo/label exports.
+
+```
+export_dataset_url(dataset_id="100113", format="geojson", epsg=2056)
 ```
 
 Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`
+
+### `export_catalog_url`
+Get download URL for the whole dataset catalog (inventory) as `csv`, `json` or `xlsx`.
+
+```
+export_catalog_url(format="xlsx", where="publisher='Amt für Wirtschaft und Tourismus'")
+```
