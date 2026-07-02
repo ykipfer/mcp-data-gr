@@ -423,9 +423,9 @@ Status: **alle umgesetzt** (Commit folgt auf 03e9761). Die vier neuen Tools sind
 
 # Teil C: SKILL.md Vorschläge
 
-Status: **offen** — SKILL.md wurde in diesem Durchgang nicht verändert, nur `main.py`, `pyproject.toml`, `README.md` und `uv.lock`. Da mehrere Code-Bugs (A2, A3, A19), auf die sich C2, C3 und C6 als Workaround-Dokumentation bezogen, jetzt behoben sind, verschiebt sich deren Dringlichkeit; Details in den jeweiligen Einträgen unten.
+Status: **umgesetzt** — `skills/ogd-graubuenden.skill` (SKILL.md im Archiv) wurde überarbeitet und neu gepackt. Umgesetzt: aktualisierte Tool-Liste inkl. der vier neuen Teil-B-Tools und erweiterten Parameter, neue Schnellreferenz nach dem Connector-Block (C8), korrigierte Kausalität der 100-Zeilen-Kappung plus `note`-Feld (C1), get_export-Deckel/`truncated` statt "ohne Zeilenlimit" (C3), vollständige Keyword-Liste (C4), dataset_uid-Fallstrick (C5), total_count-Semantik an A19 angepasst (C6), sowie die verbliebenen Lücken offset+limit, 429/Quota, `exclude`, `bfs_nummer` als Text (C7). Die ursprünglich als Workaround gedachten Ergänzungen C2 (records_count) und C6 wurden an den nun behobenen Code-Stand angepasst statt als Bug-Umgehung dokumentiert.
 
-Zeilenangaben beziehen sich auf die SKILL.md aus `skills/ogd-graubuenden.skill` (identisch mit der hochgeladenen Version, MD5-verifiziert).
+Zeilenangaben unten beziehen sich auf die ursprüngliche SKILL.md-Fassung (Analysebasis).
 
 Gesamturteil: Die vier Kernpatterns sind abgedeckt und grösstenteils präzise. Facet Inspection (Z. 74-85, 201-221) und die get_export-Schwelle (Z. 100-116) sind klar und mit dem Tool-Verhalten konsistent. Backtick-Escaping (Z. 144-149) ist über den odsql_name-Mechanismus gut gelöst. Die dataset_uid-Äquivalenz fehlt vollständig.
 
