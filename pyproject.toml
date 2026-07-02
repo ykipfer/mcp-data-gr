@@ -1,7 +1,7 @@
 [project]
-name = "data-bs-mcp"
+name = "mcp-data-gr"
 version = "0.1.0"
-description = "MCP server for data.bs.ch open data portal"
+description = "MCP server for the data.gr.ch open data portal (Opendatasoft/Huwise Explore API)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-data-bs-mcp = "main:main"
+mcp-data-gr = "main:main"
 
 [build-system]
 requires = ["hatchling"]

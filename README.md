@@ -1,4 +1,4 @@
-# data-bs-mcp
+# mcp-data-gr
 
 MCP server for any Huwise/Opendatasoft data portal.
 
@@ -21,7 +21,7 @@ npx @modelcontextprotocol/inspector uv run main.py
 
 ### Install with uvx
 ```bash
-uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
+uvx --from git+https://github.com/ykipfer/mcp-data-gr mcp-data-gr
 ```
 
 ## Selecting a catalog
@@ -32,7 +32,7 @@ path, so you only set the domain:
 
 ```
 # .env
-DATA_PORTAL_DOMAIN=data.bl.ch
+DATA_PORTAL_DOMAIN=data.gr.ch
 ```
 
 The full API base URL is built as
@@ -46,7 +46,7 @@ catalog choice through `uvx` installs as well.
 Build the image:
 
 ```bash
-docker build -t mcp-data-bs .
+docker build -t mcp-data-gr .
 ```
 
 Then use it in any MCP client that supports stdio:
@@ -54,9 +54,9 @@ Then use it in any MCP client that supports stdio:
 ```json
 {
   "mcpServers": {
-    "data-bs": {
+    "data-gr": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "mcp-data-bs"]
+      "args": ["run", "-i", "--rm", "mcp-data-gr"]
     }
   }
 }
@@ -73,9 +73,9 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 ```json
 {
   "mcpServers": {
-    "data-bs": {
+    "data-gr": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "mcp-data-bs"]
+      "args": ["run", "-i", "--rm", "mcp-data-gr"]
     }
   }
 }
@@ -88,11 +88,11 @@ Add to your OpenCode config:
 ```json
 {
   "mcpServers": {
-    "data-bs": {
+    "data-gr": {
       "command": "uv",
       "args": [
         "--directory",
-        "/ABSOLUTE/PATH/TO/data-bs-mcp",
+        "/ABSOLUTE/PATH/TO/mcp-data-gr",
         "run",
         "main.py"
       ]
@@ -108,11 +108,11 @@ Add to your Cursor config (`~/.cursor/mcp.json`):
 ```json
 {
   "mcpServers": {
-    "data-bs": {
+    "data-gr": {
       "command": "uv",
       "args": [
         "--directory",
-        "/ABSOLUTE/PATH/TO/data-bs-mcp",
+        "/ABSOLUTE/PATH/TO/mcp-data-gr",
         "run",
         "main.py"
       ]
@@ -149,17 +149,33 @@ get_dataset(dataset_id="100113")
 ```
 
 ### `get_records`
-Query records from a dataset with ODSQL filtering.
+Query records from a dataset with ODSQL filtering. Without `group_by` the API caps
+results at 100 rows; use `get_export` for more.
 
 ```
 get_records(dataset_id="100113", where="pm25 > 10", limit=100, order_by="time DESC")
 ```
 
+### `get_dataset_facets`
+List the facet values of a dataset's fields (dimension members).
+
+```
+get_dataset_facets(dataset_id="100113", facet="gemeinde")
+```
+
 ### `get_facets`
-Get available facet values for filtering.
+Get available catalog-level facet values for filtering.
 
 ```
 get_facets(facet="publisher")  # Options: publisher, keyword, theme, features, modified, language
+```
+
+### `get_export`
+Fetch filtered/aggregated records server-side, inline, no 100-row cap (defaults to a
+capped maximum when `limit` is omitted).
+
+```
+get_export(dataset_id="100113", group_by="gemeinde", select="gemeinde, sum(`anzahl`) as total")
 ```
 
 ### `export_dataset_url`
@@ -169,4 +185,4 @@ Get download URL for dataset export.
 export_dataset_url(dataset_id="100113", format="csv", where="sensornr=240")
 ```
 
-Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`, `gpx`, `kml`, `rdfxml`, `jsonld`, `turtle`
+Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`

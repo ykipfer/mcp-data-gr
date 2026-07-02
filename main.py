@@ -1,3 +1,6 @@
+import asyncio
+import logging
+import re
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlencode
@@ -5,6 +8,11 @@ from urllib.parse import urlencode
 import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mcp-data")
+
+EXPORT_MAX_ROWS = 20000
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -37,26 +45,55 @@ BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 
 mcp = FastMCP(DOMAIN, host="0.0.0.0", port=8000)
 
+# Reuse one client so connections are pooled across tool calls.
+_client = httpx.AsyncClient(
+    base_url=BASE_URL,
+    timeout=httpx.Timeout(30.0, connect=10.0),
+    limits=httpx.Limits(max_connections=10),
+)
+
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict | list:
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
-        response = await client.get(endpoint, params=params)
-        if response.status_code >= 400:
-            try:
-                err = response.json()
-            except Exception:
-                err = {"message": response.text}
-            raise RuntimeError(
-                f"ODS {response.status_code} {err.get('error_code', 'Error')}: "
-                f"{err.get('message', response.text)}"
-            )
-        return response.json()
+    for attempt in range(3):
+        try:
+            response = await _client.get(endpoint, params=params)
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                raise RuntimeError(f"Netzwerkfehler nach 3 Versuchen: {exc!r}") from exc
+            await asyncio.sleep(2 ** attempt)
+    logger.info("ODS GET %s params=%s -> %s", endpoint, params, response.status_code)
+    if response.status_code == 429:
+        raise RuntimeError(
+            "ODS 429: Domain-Quota erschoepft, spaeter erneut versuchen "
+            f"(Retry-After: {response.headers.get('Retry-After', 'unbekannt')})"
+        )
+    if response.status_code >= 400:
+        try:
+            err = response.json()
+        except Exception:
+            err = {"message": response.text}
+        logger.warning("ODS %s %s: %s", response.status_code, endpoint, err.get("message", response.text))
+        raise RuntimeError(
+            f"ODS {response.status_code} {err.get('error_code', 'Error')}: "
+            f"{err.get('message', response.text)}"
+        )
+    return response.json()
 
 
 def _to_str(value) -> str:
     if isinstance(value, list):
         return " ".join(str(v) for v in value)
-    return str(value) if value else ""
+    return "" if value is None else str(value)
+
+
+def _as_list(value) -> list:
+    return value if isinstance(value, list) else ([value] if value else [])
+
+
+def _strip_html(text: str, max_len: int = 800) -> str:
+    text = " ".join(re.sub(r"<[^>]+>", " ", text or "").split())
+    return text[:max_len] + ("..." if len(text) > max_len else "")
 
 
 def _simplify_dataset(data: dict) -> dict:
@@ -66,13 +103,13 @@ def _simplify_dataset(data: dict) -> dict:
     return {
         "dataset_id": data.get("dataset_id"),
         "title": _to_str(default.get("title")),
-        "description": _to_str(default.get("description")),
+        "description": _strip_html(_to_str(default.get("description"))),
         "theme": _to_str(default.get("theme")),
         "keyword": default.get("keyword", []) or [],
         "publisher": _to_str(default.get("publisher")),
         "modified": default.get("modified"),
-        "language": default.get("language", []) or [],
-        "records_count": explore.get("records_count"),
+        "language": _as_list(default.get("language")),
+        "records_count": default.get("records_count") or explore.get("records_count"),
     }
 
 
@@ -81,10 +118,14 @@ def _escape_odsql(value: str) -> str:
 
 
 ODS_RESERVED = {
-    "year", "month", "day", "hour", "minute", "second", "count", "sum",
-    "avg", "min", "max", "range", "top", "distinct", "group", "select",
-    "where", "not", "and", "or", "as", "by", "asc", "desc", "null",
-    "true", "false", "like", "in", "date", "datetime", "from", "limit", "offset",
+    # Official ODSQL keyword list (Explore API v2.1 reference).
+    "and", "as", "asc", "avg", "by", "count", "date_format", "day", "dayofweek",
+    "desc", "distinct", "equi", "false", "group", "hour", "ifnull", "or", "limit",
+    "lower", "max", "millisecond", "min", "minute", "month", "not", "null",
+    "quarter", "range", "search", "second", "select", "sum", "top", "true",
+    "upper", "where", "year",
+    # Not in the spec list but harmless to backtick defensively.
+    "like", "in", "date", "datetime", "from", "offset",
 }
 
 
@@ -98,17 +139,17 @@ def _odsql_safe(name: str) -> str:
     title="Search Datasets",
     description=(
         f"Search and list available open datasets from {DOMAIN}. Two modes: 'semantic' "
-        "(default) ranks the catalog by meaning using natural-language queries "
-        "(handles synonyms and other languages); 'lexical' does a classic full-text "
-        "match on the exact terms. Use semantic for conceptual discovery, lexical for "
-        "precise term/name lookups."
+        "(default) filters and ranks the catalog by meaning using natural-language "
+        "queries (handles synonyms and other languages, with an automatic relevance "
+        "threshold); 'lexical' does a classic full-text match on the exact terms. Use "
+        "semantic for conceptual discovery, lexical for precise term/name lookups."
     ),
 )
 async def get_datasets(
     limit: int = 10,
     offset: int = 0,
     search: str | None = None,
-    search_mode: str = "semantic",
+    search_mode: Literal["semantic", "lexical"] = "semantic",
     refine: str | None = None,
     exclude: str | None = None,
     order_by: str | None = None,
@@ -123,9 +164,9 @@ async def get_datasets(
         limit: Number of items to return (default: 10, max: 100)
         offset: Index of first item to return (default: 0)
         search: Search string. Interpreted according to search_mode.
-        search_mode: "semantic" (default) ranks the whole catalog by meaning via
-            vector_similarity (best for natural-language/conceptual queries, also
-            matches synonyms and other languages); "lexical" filters by exact
+        search_mode: "semantic" (default) filters and ranks the catalog by meaning via
+            vector_similarity_threshold (best for natural-language/conceptual queries,
+            also matches synonyms and other languages); "lexical" filters by exact
             full-text match. Ignored when search is empty.
         refine: Facet filter to limit results (e.g., "publisher:Statistisches Amt")
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
@@ -136,9 +177,9 @@ async def get_datasets(
 
     Returns:
         Dictionary with total_count and results array containing dataset metadata.
-        Note: in semantic mode the catalog is ranked rather than filtered, so
-        total_count reflects the whole catalog and the top results are the most
-        relevant.
+        In semantic mode an automatic relevance threshold filters the catalog, so
+        total_count reflects the number of relevant matches, ranked most relevant
+        first.
     """
     params: dict[str, str | int] = {"limit": min(limit, 100), "offset": offset}
     if refine:
@@ -159,6 +200,7 @@ async def get_datasets(
             if order_by:
                 params["order_by"] = order_by
         else:
+            params["where"] = f'vector_similarity_threshold("{query}")'
             params["order_by"] = f'vector_similarity("{query}") desc'
     elif order_by:
         params["order_by"] = order_by
@@ -189,13 +231,13 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
     return {
         "dataset_id": data.get("dataset_id"),
         "title": metas.get("default", {}).get("title"),
-        "description": metas.get("default", {}).get("description"),
+        "description": _strip_html(_to_str(metas.get("default", {}).get("description")), max_len=2000),
         "theme": metas.get("default", {}).get("theme"),
         "keyword": metas.get("default", {}).get("keyword", []),
         "publisher": metas.get("default", {}).get("publisher"),
         "modified": metas.get("default", {}).get("modified"),
-        "language": metas.get("default", {}).get("language", []),
-        "records_count": data.get("metas", {}).get("default", {}).get("records_count"),
+        "language": _as_list(metas.get("default", {}).get("language")),
+        "records_count": metas.get("default", {}).get("records_count"),
         "fields": [
             {
                 "name": f.get("name"),
@@ -260,7 +302,8 @@ async def get_records(
         If total_count > len(results), consider using get_export instead.
     """
     max_limit = 20000 if group_by else 100
-    params: dict[str, str | int] = {"limit": min(limit, max_limit), "offset": offset}
+    capped = min(limit, max_limit)
+    params: dict[str, str | int] = {"limit": capped, "offset": offset}
     if select:
         params["select"] = select
     if where:
@@ -279,7 +322,10 @@ async def get_records(
         params["timezone"] = timezone
     if include_links:
         params["include_links"] = "true"
-    return await fetch(f"/catalog/datasets/{dataset_id}/records", params)
+    result = await fetch(f"/catalog/datasets/{dataset_id}/records", params)
+    if capped < limit:
+        result["note"] = f"limit auf {capped} gekappt; get_export fuer mehr Zeilen verwenden"
+    return result
 
 
 @mcp.tool(
@@ -310,6 +356,8 @@ async def get_facets(facet: str | None = None) -> dict:
         for f in data["facets"]:
             if f["name"] == facet:
                 return {"facet": facet, "values": f.get("facets", [])}
+        return {"facet": facet, "values": [],
+                "note": f"Facette '{facet}' nicht gefunden. Verfuegbar: {[f['name'] for f in data['facets']]}"}
     return data
 
 
@@ -392,8 +440,10 @@ async def export_dataset_url(
     title="Fetch Export Data",
     description=(
         "Fetch filtered/aggregated records server-side and return them inline (JSON). "
-        "No row limit. Use this instead of get_records when you need more than 100 rows "
-        "or when the client cannot fetch export URLs directly."
+        f"Defaults to at most {EXPORT_MAX_ROWS} rows (raise limit explicitly for more). "
+        "Use this instead of get_records when you need more than 100 rows or when the "
+        "client cannot fetch export URLs directly. Always narrow with where/group_by "
+        "on large datasets."
     ),
 )
 async def get_export(
@@ -414,18 +464,21 @@ async def get_export(
         where: ODSQL WHERE clause
         group_by: Grouping expression
         order_by: Sort expression
-        limit: Max rows to return
+        limit: Max rows to return (capped default applied when omitted)
         lang: Language for metadata (default: "de")
 
     Returns:
-        Dictionary with count and results array
+        Dictionary with count, truncated flag, and results array. If truncated is
+        True, narrow with where/group_by or pass a higher limit.
     """
     params = {k: v for k, v in {
         "select": select, "where": where, "group_by": group_by,
-        "order_by": order_by, "limit": limit, "lang": lang,
+        "order_by": order_by, "lang": lang,
     }.items() if v is not None}
+    params["limit"] = limit if limit is not None else EXPORT_MAX_ROWS
     data = await fetch(f"/catalog/datasets/{dataset_id}/exports/json", params)
-    return {"count": len(data) if isinstance(data, list) else None, "results": data}
+    count = len(data) if isinstance(data, list) else None
+    return {"count": count, "truncated": limit is None and count == EXPORT_MAX_ROWS, "results": data}
 
 
 def main():
