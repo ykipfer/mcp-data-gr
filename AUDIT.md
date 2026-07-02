@@ -1,12 +1,12 @@
 # Code Review MCP-DATA-GR
 
-Audit vom 2026-07-02. Geprüft: `main.py` (Stand Commit f793ca6), `pyproject.toml`, `Dockerfile`, `.env`, `README.md`, `skills/ogd-graubuenden.skill` (SKILL.md), OpenAPI-Spezifikation der Explore API (Version v2.0 laut `info.version`), Live-Verhalten des produktiven Servers via MCP-Connector.
+Audit vom 2026-07-02, revidiert nach Nachlieferung der v2.1-Spezifikation. Geprüft: `main.py` (Stand Commit f793ca6), `pyproject.toml`, `Dockerfile`, `.env`, `README.md`, `skills/ogd-graubuenden.skill` (SKILL.md), OpenAPI-Spezifikationen der Explore API in v2.0 und v2.1 (inkl. der in v2.1 eingebetteten vollständigen ODSQL-Referenz), Live-Verhalten des produktiven Servers via MCP-Connector.
 
 ## Nicht einsehbare Artefakte (explizite Lücken)
 
 - systemd Unit-File: nicht im Repo. Restart-Policy, Ressourcenlimits, User-Isolation nicht prüfbar.
 - ngrok-Konfiguration: nicht im Repo. Ob auf ngrok-Ebene Auth (Basic Auth, OAuth, IP-Restriktion) aktiv ist, ist nicht prüfbar.
-- Die beigelegte OpenAPI-Spezifikation dokumentiert v2.0, der Server nutzt `.../api/explore/v2.1` (main.py:36). v2.1-spezifische Erweiterungen (`vector_similarity`, `include_app_metas`, `group_by` auf Exports) fehlen in der Spezifikation; Abweichungen sind entsprechend als «vermutet» oder live verifiziert markiert.
+- Die ODSQL-Dokumentationsseite (help.opendatasoft.com/apis/ods-explore-v2) ist aus der Audit-Umgebung nicht abrufbar (Proxy 403). Sie ist die gerenderte Darstellung der v2.1-Spezifikation; deren `info.description` enthält die vollständige ODSQL-Referenz (Language elements, Literale, Reserved Keywords, Prädikate, Funktionen) und wurde als Grundlage verwendet. Inhaltliche Abweichungen zwischen Webseite und eingebetteter Referenz sind nicht auszuschliessen, aber unwahrscheinlich.
 
 ## Tool-Inventar
 
@@ -45,7 +45,7 @@ Positiv vorab (bestätigt): ODS-Fehlertexte werden an den Client durchgereicht (
 - Kategorie: Betrieb / Code
 - Fundstelle: `get_export`, main.py:399-428, insb. main.py:427 `data = await fetch(...)` und main.py:41-53 (fetch lädt Response komplett via `response.json()`)
 - Status: bestätigt (Code); Grössenordnung live verifiziert: `dvs_awt_soci_20250507` hat 344'085 Zeilen
-- Problem: `limit` ist optional und wird ohne Angabe nicht gesetzt; der Export-Endpoint liefert dann den kompletten Datensatz (Spec-Default `limit=-1`, unbegrenzt). Die gesamte Antwort wird in den RAM des Pi geladen (`response.json()`) und inline über MCP zurückgegeben. SKILL.md deklariert `get_export` als Standardweg für >100 Zeilen, ein Aufruf ohne `where`/`group_by` auf einem grossen Datensatz ist also ein realistischer Agenten-Fehltritt, kein Randfall.
+- Problem: `limit` ist optional und wird ohne Angabe nicht gesetzt; der Export-Endpoint liefert dann den kompletten Datensatz (v2.1-Spec, Parameter `limit_export`: Default `-1`, «Use -1 (default) to retrieve all records»). Die gesamte Antwort wird in den RAM des Pi geladen (`response.json()`) und inline über MCP zurückgegeben. SKILL.md deklariert `get_export` als Standardweg für >100 Zeilen, ein Aufruf ohne `where`/`group_by` auf einem grossen Datensatz ist also ein realistischer Agenten-Fehltritt, kein Randfall.
 - Auswirkung: Out-of-Memory oder Minutenblockade auf dem Pi (Betriebsausfall), gesprengtes Kontextfenster beim Client, 30s-Timeout-Abbrüche mitten im Download.
 - Fix (Default-Deckel mit explizitem Opt-out):
 
@@ -134,7 +134,7 @@ async def fetch(endpoint, params=None):
 - Severity: mittel
 - Kategorie: Fachlich
 - Fundstelle: `ODS_RESERVED`, main.py:83-88
-- Status: bestätigt (Abgleich mit Keyword-Liste der OpenAPI-Spezifikation, Abschnitt «Reserved keywords in ODSQL clauses»)
+- Status: bestätigt (Abgleich mit der Keyword-Liste im Abschnitt «Reserved keywords in ODSQL clauses»; die Liste ist in v2.0 und v2.1 identisch, der Befund gilt also auch gegen die produktiv genutzte Version)
 - Problem: Gegenüber der offiziellen Liste fehlen: `date_format`, `dayofweek`, `equi`, `ifnull`, `lower`, `upper`, `millisecond`, `quarter`, `search`. Die zusätzlichen Einträge im Code (`like`, `in`, `date`, `datetime`, `from`, `offset`) sind unschädlich (Über-Escaping ist erlaubt), die fehlenden aber nicht: ein Feld namens z.B. `search` oder `quarter` erhält einen falschen (ungebacktickten) `odsql_name`.
 - Auswirkung: `get_dataset` liefert für betroffene Felder einen `odsql_name`, der in `where`/`select` einen 400 oder eine Fehlinterpretation auslöst; SKILL.md verweist Agenten explizit auf `odsql_name` als verlässliche Quelle.
 - Fix: Liste mit der Spezifikation synchronisieren:
@@ -160,6 +160,25 @@ ODS_RESERVED = {
 - Problem: `search_mode: str = "semantic"`; die Verzweigung prüft nur `if search_mode == "lexical"`, jeder andere Wert (z.B. "Lexical", "fulltext") läuft kommentarlos in den semantischen Zweig.
 - Auswirkung: Ein Agent, der lexikalisch suchen will, erhält still ein semantisches Ranking; zudem wird `order_by` in diesem Fall still überschrieben (main.py:162).
 - Fix: `search_mode: Literal["semantic", "lexical"] = "semantic"` (Literal ist bereits importiert). Pydantic validiert dann automatisch auf Schema-Ebene.
+
+## A19. Semantische Suche ohne Relevanz-Schwelle: vector_similarity_threshold() ungenutzt
+
+- Severity: mittel
+- Kategorie: Fachlich
+- Fundstelle: `get_datasets`, main.py:162: `params["order_by"] = f'vector_similarity("{query}") desc'`
+- Status: bestätigt (v2.1-Spec dokumentiert beide Funktionen; Live-Verhalten konsistent: `total_count` entspricht der ungefilterten Grundmenge). Verfügbarkeit von `vector_similarity_threshold()` auf data.gr.ch selbst: vermutet, aus der Audit-Umgebung nicht direkt testbar (plausibel, da `vector_similarity()` auf dem Portal nachweislich funktioniert und dieselbe Embedding-Infrastruktur voraussetzt); vor dem Deployment mit einem Testaufruf verifizieren.
+- Problem: Der semantische Modus sortiert nur (`vector_similarity()` ist laut v2.1-Referenz ausschliesslich in `order_by` erlaubt und «returns all catalog results»). Die v2.1-Referenz bietet dafür `vector_similarity_threshold()` als `where`-Prädikat für die Katalogsuche an, das über einen automatischen Score-Cutoff (Kneedle-Algorithmus) irrelevante Datensätze aus dem Resultat entfernt.
+- Auswirkung: `total_count` ist im semantischen Modus bedeutungslos (gesamter Katalog statt Treffermenge), und die Resultatliste enthält am Ende garantiert irrelevante Einträge, die der Agent selbst aussortieren muss. Kombination mit `refine`/`exclude` liefert gefilterte, aber weiterhin ungewichtete Zählwerte.
+- Fix: Im semantischen Zweig zusätzlich das Threshold-Prädikat setzen, Sortierung beibehalten:
+
+```python
+        else:
+-            params["order_by"] = f'vector_similarity("{query}") desc'
++            params["where"] = f'vector_similarity_threshold("{query}")'
++            params["order_by"] = f'vector_similarity("{query}") desc'
+```
+
+  Danach ist `total_count` die tatsächliche Treffermenge; Docstring (main.py:139-141) und SKILL.md entsprechend anpassen. Hinweis der Referenz beachten: die Threshold-Methode kann in Randfällen relevante Treffer abschneiden; falls 0 Treffer, als Fallback ohne `where` wiederholen.
 
 ## A9. HTML-Descriptions ungefiltert (Token-Ballast)
 
@@ -227,7 +246,7 @@ WantedBy=multi-user.target
 - Severity: niedrig
 - Kategorie: Fachlich
 - Fundstelle: `get_records`, main.py:230-231
-- Status: bestätigt (Spec: ohne group_by muss offset+limit < 10000 sein, mit group_by < 20000)
+- Status: bestätigt (v2.0 und v2.1 identisch: ohne group_by muss offset+limit < 10000 sein, mit group_by < 20000)
 - Problem: Der Server validiert `limit` (le=20000) und `offset` (ge=0) einzeln, nicht die Summe. Der ODS-400 wird zwar durchgereicht (gut), aber vermeidbar.
 - Auswirkung: Vermeidbarer Fehlversuch bei tiefer Pagination; SKILL.md rät ohnehin von Pagination ab.
 - Fix: Vorab-Check mit sprechender Meldung («offset+limit >= 10000: get_export verwenden») oder Hinweis im Docstring ergänzen.
@@ -282,12 +301,15 @@ WantedBy=multi-user.target
 - Auswirkung: Doku-Drift, Fehlversuche.
 - Fix: README angleichen oder das Literal erweitern (gpx/kml sind laut Spec nur für Geo-Datensätze sinnvoll).
 
-## Spec-Abgleich, weitere Feststellungen (ohne eigene Severity)
+## Spec-Abgleich (v2.1), weitere Feststellungen (ohne eigene Severity)
 
-- `group_by` ist für `/exports/{format}` in der vorliegenden Spezifikation nicht als Parameter dokumentiert, funktioniert aber live (verifiziert mit `get_export(..., group_by="jahr")` gegen data.gr.ch). v2.1-Feature, kein Handlungsbedarf, aber wissenswert bei Portal-Upgrades.
-- `include_app_metas` (main.py:116) und `vector_similarity` (main.py:162) sind in der Spezifikation (v2.0) nicht enthalten: vermutet Huwise-/v2.1-Erweiterungen. Live funktioniert die semantische Suche.
+- `group_by` auf `/exports/{format}` ist in v2.1 offiziell dokumentiert (v2.1-Changelog: «the group_by clause is now available on export endpoints») und live verifiziert. In v2.0 existierte der Parameter nicht; die Tools sind hier v2.1-konform. Kein Handlungsbedarf.
+- `include_app_metas` (main.py:116) und `vector_similarity` (main.py:162) sind in v2.1 dokumentiert (getDatasets-Parameter bzw. ODSQL-Funktionsreferenz). Beide Befunde damit von «vermutet» auf bestätigt hochgestuft.
+- `get_records` könnte in v2.1 zusätzlich `include_app_metas` exponieren (Parameter existiert am Records-Endpoint); geringer Nutzen, optional.
+- v2.1-Changelog bestätigt weitere im Code/Skill vorausgesetzte Verhalten: `year()`/`month()`/`day()` liefern Integer (vorher Strings), CSV-Exporte enthalten per Default ein BOM, XLSX ersetzt XLS, `distance()` heisst neu `within_distance()`.
 - `lang` wird nicht gegen das Spec-Enum (en, fr, de, it, ...) validiert; ungültige Werte erzeugen einen durchgereichten API-Fehler. Akzeptabel.
-- Injection-Risiko insgesamt gering: Die API ist read-only (nur GET), die Domain ist fest verdrahtet (main.py:36), `where`/`select`/`group_by` sind bewusste ODSQL-Passthroughs, und der einzige vom Server interpolierte Nutzerwert (`search`) wird escaped (main.py:79-80, korrekt für Backslash und doppelte Anführungszeichen). `dataset_id` wird unverändert in den Pfad interpoliert (main.py:187 u.a.); httpx encodiert Sonderzeichen, ein Traversal über `../` gegen dieselbe Host-API bleibt theoretisch denkbar, ist aber ohne Schadpotenzial (gleiches, öffentliches API).
+- Injection-Risiko insgesamt gering: Die API ist read-only (nur GET), die Domain ist fest verdrahtet (main.py:36), `where`/`select`/`group_by` sind bewusste ODSQL-Passthroughs, und der einzige vom Server interpolierte Nutzerwert (`search`) wird escaped (main.py:79-80). Das Escaping ist durch die v2.1-Referenz gedeckt: String-Literale erlauben einfache oder doppelte Anführungszeichen, `\` dient als Escape-Zeichen; `_escape_odsql` escapt genau Backslash und doppelte Anführungszeichen für den doppelt-quotierten Kontext. `dataset_id` wird unverändert in den Pfad interpoliert (main.py:187 u.a.); httpx encodiert Sonderzeichen, ein Traversal über `../` gegen dieselbe Host-API bleibt theoretisch denkbar, ist aber ohne Schadpotenzial (gleiches, öffentliches API).
+- Die Explore API unterstützt Authentifizierung via API-Key und OAuth2 (v2.1-Abschnitt «Authentication»). data.gr.ch ist öffentlich, `fetch()` hat keinerlei Key-Mechanismus; sollte das Portal je Quota-gebundene Keys einführen, wäre eine Erweiterung nötig (kein aktueller Handlungsbedarf).
 - `dataset_uid`: Die Spezifikation führt `dataset_uid` als eigenes Feld im Dataset-Schema; weder die Tools noch SKILL.md exponieren oder erwähnen es. Alle Tools verwenden konsistent `dataset_id` als Pfadparameter, was der Spezifikation entspricht. Keine Inkonsistenz gefunden; die im Audit-Auftrag genannte Äquivalenz ist im Projekt schlicht nirgends dokumentiert (bestätigte Absenz).
 
 ---
@@ -350,6 +372,8 @@ Zeilenangaben beziehen sich auf die SKILL.md aus `skills/ogd-graubuenden.skill` 
 
 Gesamturteil: Die vier Kernpatterns sind abgedeckt und grösstenteils präzise. Facet Inspection (Z. 74-85, 201-221) und die get_export-Schwelle (Z. 100-116) sind klar und mit dem Tool-Verhalten konsistent. Backtick-Escaping (Z. 144-149) ist über den odsql_name-Mechanismus gut gelöst. Die dataset_uid-Äquivalenz fehlt vollständig.
 
+Mehrere fachliche Aussagen des Skills sind durch die v2.1-ODSQL-Referenz nun wörtlich bestätigt: die `search()`-Semantik (Z. 178: Levenshtein-Distanz 2 ab Termlänge >5, Distanz 1 ab >2, Prefix-Match auf dem letzten Wort, case-insensitive), `year()` liefert Integer (Z. 156, v2.1-Changelog), das Aggregat-zuerst-Gebot im order_by (Z. 166, Referenz: «order_by = avg(age), gender works, but order_by = gender, avg(age) returns an error»), das BOM in CSV-Exporten (Z. 132, per Default aktiv) und die Datum-Literal-Syntax (Z. 155; zusätzlich erlaubt die Referenz auch `date'YYYY/MM/DD'`).
+
 ## C1. Falsche Kausalität bei der 100-Zeilen-Kappung
 
 - Fundstelle: SKILL.md Z. 100 («der Server kappt auf 100») und Z. 172
@@ -373,7 +397,7 @@ Gesamturteil: Die vier Kernpatterns sind abgedeckt und grösstenteils präzise. 
 ## C4. Reservierte Wortliste unvollständig und leicht abweichend
 
 - Fundstelle: SKILL.md Z. 148
-- Problem: Die Auswahl-Liste spiegelt die (unvollständige) Code-Liste. Es fehlen u.a. `search`, `quarter`, `dayofweek`, `ifnull`, `lower`, `upper`; dafür ist `date` gelistet, das in der offiziellen Keyword-Liste nicht vorkommt. Da der Skill primär auf `odsql_name` verweist, ist der Schaden begrenzt, aber Liste und Realität sollten übereinstimmen (zusammen mit Fix A7).
+- Problem: Die Auswahl-Liste spiegelt die (unvollständige) Code-Liste. Es fehlen u.a. `search`, `quarter`, `dayofweek`, `ifnull`, `lower`, `upper`; dafür ist `date` gelistet, das in der offiziellen Keyword-Liste (in v2.0 und v2.1 identisch) nicht vorkommt. Da der Skill primär auf `odsql_name` verweist, ist der Schaden begrenzt, aber Liste und Realität sollten übereinstimmen (zusammen mit Fix A7).
 - Ergänzung: Liste durch die Spec-Liste ersetzen oder kürzen auf: «Reservierte Wörter siehe API-Doku; im Zweifel schaden Backticks nie: `` `feld` `` ist immer gültig.»
 
 ## C5. dataset_uid-Äquivalenz nirgends dokumentiert
@@ -385,8 +409,9 @@ Gesamturteil: Die vier Kernpatterns sind abgedeckt und grösstenteils präzise. 
 ## C6. Semantik von total_count im semantischen Modus fehlt
 
 - Fundstelle: SKILL.md Z. 34-44 (Schritt 1)
-- Problem: Im semantischen Modus wird der Katalog gerankt, nicht gefiltert; `total_count` entspricht dann nicht der Treffermenge (das Tool-Docstring in main.py:139-141 dokumentiert das, der Skill nicht). Ein Agent könnte «47 Treffer» berichten, obwohl das die Katalog- bzw. Ranking-Grundmenge ist.
+- Problem: Im semantischen Modus wird der Katalog gerankt, nicht gefiltert; `total_count` entspricht dann nicht der Treffermenge (das Tool-Docstring in main.py:139-141 dokumentiert das, der Skill nicht). Die v2.1-Referenz bestätigt: `vector_similarity()` in `order_by` «returns all catalog results». Ein Agent könnte «47 Treffer» berichten, obwohl das die Katalog- bzw. Ranking-Grundmenge ist.
 - Ergänzung: «Im `semantic`-Modus ist `total_count` NICHT die Zahl relevanter Treffer (der ganze Katalog wird gerankt). Relevanz selbst beurteilen, `total_count` nicht als Trefferzahl kommunizieren.»
+- Nachhaltige Lösung ist serverseitig: Befund A19 (Umstellung auf `vector_similarity_threshold()` im `where`); danach ist `total_count` aussagekräftig und dieser Skill-Hinweis kann wieder entfallen.
 
 ## C7. Fallstricke, die der Skill abdeckt (bestätigt) und verbleibende Lücken
 
