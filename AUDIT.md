@@ -2,6 +2,34 @@
 
 Audit vom 2026-07-02, revidiert nach Nachlieferung der v2.1-Spezifikation. Geprüft: `main.py` (Stand Commit f793ca6), `pyproject.toml`, `Dockerfile`, `.env`, `README.md`, `skills/ogd-graubuenden.skill` (SKILL.md), OpenAPI-Spezifikationen der Explore API in v2.0 und v2.1 (inkl. der in v2.1 eingebetteten vollständigen ODSQL-Referenz), Live-Verhalten des produktiven Servers via MCP-Connector.
 
+## Umsetzungsstand (Commit 29356e1)
+
+Auf Anweisung wurden Sicherheits-/Betriebsbefunde zu Auth, ngrok und systemd (A1, A10) von der Implementierung ausgeschlossen; sie bleiben unten als offene Befunde stehen. A11 (Testsuite) und A13 (offset+limit-Vorabvalidierung) wurden nach YAGNI bewusst nicht umgesetzt. Alle übrigen Code- und Doku-Befunde sind umgesetzt. Teil B (neue Tools) und Teil C (SKILL.md) sind weiterhin offene Vorschläge; SKILL.md wurde in diesem Durchgang nicht verändert.
+
+| Befund | Status |
+|---|---|
+| A1 Auth/Bind | offen (ausgeschlossen) |
+| A2 get_export Default-Limit | **umgesetzt** |
+| A3 records_count Mapping | **umgesetzt** |
+| A4 Netzwerkfehler/429-Handling | **umgesetzt** |
+| A5 Connection Pooling | **umgesetzt** |
+| A6 Logging | **umgesetzt** |
+| A7 ODS_RESERVED Liste | **umgesetzt** |
+| A8 search_mode Literal | **umgesetzt** |
+| A19 vector_similarity_threshold | **umgesetzt** (Live-Verifikation gegen data.gr.ch ausstehend) |
+| A9 HTML-Strip | **umgesetzt** |
+| A10 systemd/ngrok-Konfiguration | offen (ausgeschlossen) |
+| A11 Tests/CI | offen (YAGNI) |
+| A12 Limit-Kappung Hinweis | **umgesetzt** |
+| A13 offset+limit-Vorabvalidierung | offen (YAGNI) |
+| A14 _to_str falsy Werte | **umgesetzt** |
+| A15 language als Liste | **umgesetzt** |
+| A16 get_facets Hinweis | **umgesetzt** |
+| A17 Namens-/Doku-Altlasten | **umgesetzt** |
+| A18 README-Formatliste | **umgesetzt** |
+| Teil B (neue Tools) | offen, Vorschlag |
+| Teil C (SKILL.md) | offen, Vorschlag |
+
 ## Nicht einsehbare Artefakte (explizite Lücken)
 
 - systemd Unit-File: nicht im Repo. Restart-Policy, Ressourcenlimits, User-Isolation nicht prüfbar.
@@ -28,6 +56,7 @@ Positiv vorab (bestätigt): ODS-Fehlertexte werden an den Client durchgereicht (
 
 ## A1. MCP-Endpoint ohne Authentifizierung, Bind auf 0.0.0.0
 
+- Umsetzung: **offen** — auf Anweisung von der Implementierung ausgeschlossen (Auth/ngrok/systemd sind explizit Betrieb, nicht Code)
 - Severity: kritisch
 - Kategorie: Sicherheit
 - Fundstelle: main.py:38 und main.py:431-432
@@ -41,6 +70,7 @@ Positiv vorab (bestätigt): ODS-Fehlertexte werden an den Client durchgereicht (
 
 ## A2. get_export ohne Default-Limit: Speicher- und Kontext-Blowup
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `EXPORT_MAX_ROWS = 20000` (main.py:15), `get_export` (main.py:449) setzt `limit` auf diesen Deckel, wenn keiner übergeben wird, und liefert `truncated: bool` im Resultat. Offline mit gemocktem `fetch` verifiziert: ohne `limit` wird 20000 an die API gesendet und `truncated=True` gemeldet, mit explizitem `limit=20000` ist `truncated=False`.
 - Severity: kritisch
 - Kategorie: Betrieb / Code
 - Fundstelle: `get_export`, main.py:399-428, insb. main.py:427 `data = await fetch(...)` und main.py:41-53 (fetch lädt Response komplett via `response.json()`)
@@ -68,6 +98,7 @@ async def get_export(..., limit: int | None = None, ...) -> dict:
 
 ## A3. records_count in get_datasets immer null (falsches Metadaten-Resultat)
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `_simplify_dataset` (main.py:99) liest jetzt `default.get("records_count") or explore.get("records_count")`. Offline verifiziert (Mapping liefert 42 statt null bei gesetztem `metas.default.records_count`); nicht erneut live gegen data.gr.ch getestet.
 - Severity: mittel (an der Grenze zu kritisch: irreführendes Resultat an den Nutzer, aber null statt falscher Zahl)
 - Kategorie: Fachlich / Code
 - Fundstelle: `_simplify_dataset`, main.py:75: `"records_count": explore.get("records_count")`
@@ -83,6 +114,7 @@ async def get_export(..., limit: int | None = None, ...) -> dict:
 
 ## A4. Kein Handling von Netzwerkfehlern, Timeouts und Rate Limits in fetch()
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `fetch` (main.py:56) hat jetzt einen Retry mit exponentiellem Backoff (2 Versuche, `asyncio.sleep(2**attempt)`) um `httpx.TransportError`, sowie eine dedizierte 429-Behandlung mit Retry-After-Hinweis vor der generischen 4xx/5xx-Fehlerbehandlung.
 - Severity: mittel
 - Kategorie: Code / Betrieb
 - Fundstelle: `fetch`, main.py:41-53
@@ -111,6 +143,7 @@ async def fetch(endpoint, params=None):
 
 ## A5. Neuer AsyncClient pro Request (kein Connection Pooling)
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). Modulglobaler `_client = httpx.AsyncClient(...)` (main.py:49) mit `httpx.Timeout(30.0, connect=10.0)` und `httpx.Limits(max_connections=10)`; `fetch()` verwendet ihn ohne `async with` pro Aufruf.
 - Severity: mittel
 - Kategorie: Code / Betrieb
 - Fundstelle: `fetch`, main.py:42: `async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:`
@@ -121,6 +154,7 @@ async def fetch(endpoint, params=None):
 
 ## A6. Kein Logging
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `logging.basicConfig(level=logging.INFO)` (main.py:11) plus INFO-Log pro Request und WARNING bei Fehlerstatus in `fetch()` (main.py:56).
 - Severity: mittel
 - Kategorie: Code / Betrieb
 - Fundstelle: main.py gesamt (kein `import logging`, keine Log-Aufrufe)
@@ -131,6 +165,7 @@ async def fetch(endpoint, params=None):
 
 ## A7. Reservierte ODSQL-Keywords unvollständig in ODS_RESERVED
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `ODS_RESERVED` (main.py:120) enthält jetzt die vollständige v2.1-Keyword-Liste plus die defensiven Zusatzeinträge; offline mit `_odsql_safe` für `search`, `quarter`, `ifnull` verifiziert (werden jetzt korrekt gebacktickt).
 - Severity: mittel
 - Kategorie: Fachlich
 - Fundstelle: `ODS_RESERVED`, main.py:83-88
@@ -153,6 +188,7 @@ ODS_RESERVED = {
 
 ## A8. search_mode ist freier String, Tippfehler fallen still auf semantic zurück
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `search_mode: Literal["semantic", "lexical"] = "semantic"` (main.py:154); ungültige Werte werden jetzt vom Pydantic-Schema abgewiesen statt still auf semantic zu fallen.
 - Severity: mittel
 - Kategorie: Code
 - Fundstelle: `get_datasets`, main.py:111 und main.py:157-162
@@ -163,6 +199,7 @@ ODS_RESERVED = {
 
 ## A19. Semantische Suche ohne Relevanz-Schwelle: vector_similarity_threshold() ungenutzt
 
+- Umsetzung: **umgesetzt** (Commit 29356e1), Live-Verifikation ausstehend. `get_datasets` setzt im semantischen Zweig jetzt `params["where"] = f'vector_similarity_threshold("{query}")'` zusätzlich zum bestehenden `order_by` (main.py:~200). Offline mit gemocktem `fetch` verifiziert (korrekter Query-Bau). Direkter Test gegen `data.gr.ch` war aus der Audit-Umgebung nicht möglich (Netzwerkzugriff ausserhalb des MCP-Connectors ist blockiert, und der Connector selbst lief zum Zeitpunkt der Implementierung noch auf der alten Serverversion). **Vor dem produktiven Deployment: `get_datasets(search=...)` einmal ausführen und prüfen, dass kein 400 wegen `vector_similarity_threshold` zurückkommt.** Fällt der Test negativ aus, ist ein Rollback der zwei geänderten Zeilen auf reines `order_by`-Ranking der sichere Rückweg.
 - Severity: mittel
 - Kategorie: Fachlich
 - Fundstelle: `get_datasets`, main.py:162: `params["order_by"] = f'vector_similarity("{query}") desc'`
@@ -182,6 +219,7 @@ ODS_RESERVED = {
 
 ## A9. HTML-Descriptions ungefiltert (Token-Ballast)
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `_strip_html` (main.py:94) entfernt Tags und kürzt; in `_simplify_dataset` auf 800, in `get_dataset` auf 2000 Zeichen. Offline verifiziert (`<p style=...><b>` wird zu reinem Text, Kürzung mit `...`-Suffix funktioniert).
 - Severity: mittel
 - Kategorie: Code
 - Fundstelle: `_simplify_dataset`, main.py:69 und `get_dataset`, main.py:192
@@ -202,6 +240,7 @@ def _strip_html(text: str, max_len: int = 800) -> str:
 
 ## A10. systemd- und ngrok-Konfiguration nicht versioniert
 
+- Umsetzung: **offen** — auf Anweisung von der Implementierung ausgeschlossen
 - Severity: mittel
 - Kategorie: Betrieb / Struktur
 - Fundstelle: Repo-Root (keine `*.service`-, keine ngrok-Datei vorhanden)
@@ -223,6 +262,7 @@ WantedBy=multi-user.target
 
 ## A11. Keine Tests, kein CI
 
+- Umsetzung: **offen** — bewusst nach YAGNI/One-Liner-Vorgabe nicht umgesetzt. Die geänderten Helper wurden stattdessen ad hoc offline verifiziert (siehe Umsetzungshinweise bei A2, A3, A7, A9, A12, A19), das ersetzt aber keine dauerhafte Testsuite.
 - Severity: mittel
 - Kategorie: Struktur
 - Fundstelle: Repo gesamt (keine `tests/`, keine CI-Workflows)
@@ -233,6 +273,7 @@ WantedBy=multi-user.target
 
 ## A12. Stille Limit-Kappung auf 100 im Client
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `get_records` (main.py:266) hängt bei Kappung `"note": "limit auf {capped} gekappt; get_export fuer mehr Zeilen verwenden"` an die Antwort an. Offline verifiziert: `limit=500` liefert die Notiz, `limit=50` nicht.
 - Severity: niedrig
 - Kategorie: Code
 - Fundstelle: `get_records`, main.py:262-263: `max_limit = 20000 if group_by else 100` / `min(limit, max_limit)`
@@ -243,6 +284,7 @@ WantedBy=multi-user.target
 
 ## A13. offset+limit-Grenze der API nicht validiert
 
+- Umsetzung: **offen** — bewusst nach YAGNI nicht umgesetzt (der durchgereichte ODS-400 ist ausreichend, ein Vorab-Check wäre reine Komfortverbesserung ohne Korrektheitsgewinn).
 - Severity: niedrig
 - Kategorie: Fachlich
 - Fundstelle: `get_records`, main.py:230-231
@@ -253,6 +295,7 @@ WantedBy=multi-user.target
 
 ## A14. _to_str verschluckt falsy Werte (0, False)
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `_to_str` (main.py:84): `return "" if value is None else str(value)`. Offline verifiziert: `_to_str(0)` liefert jetzt `"0"`.
 - Severity: niedrig
 - Kategorie: Code
 - Fundstelle: `_to_str`, main.py:59: `return str(value) if value else ""`
@@ -263,6 +306,7 @@ WantedBy=multi-user.target
 
 ## A15. language: Docstring verspricht Liste, API liefert String
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). Neuer Helper `_as_list` (main.py:90), verwendet in `_simplify_dataset` und `get_dataset`. Offline verifiziert: String `"de"` wird zu `["de"]`, Liste bleibt unverändert, `None` wird zu `[]`.
 - Severity: niedrig
 - Kategorie: Code
 - Fundstelle: `_simplify_dataset`, main.py:74 und `get_dataset`, main.py:197
@@ -273,6 +317,7 @@ WantedBy=multi-user.target
 
 ## A16. get_facets: unbekannte Facette liefert stillschweigend die Rohantwort
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `get_facets` (main.py:340) liefert bei nicht gefundenem `facet` jetzt `{"facet": ..., "values": [], "note": "... nicht gefunden. Verfuegbar: [...]"}` statt still die Rohantwort.
 - Severity: niedrig
 - Kategorie: Code
 - Fundstelle: `get_facets`, main.py:308-313
@@ -283,6 +328,7 @@ WantedBy=multi-user.target
 
 ## A17. Namens- und Doku-Altlasten aus dem data.bs-Fork
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). `pyproject.toml` (Name `mcp-data-gr`, Beschreibung data.gr.ch, Script-Entry `mcp-data-gr`), `README.md` (Titel, uvx-Zeile zeigt auf `ykipfer/mcp-data-gr`, `.env`-Beispiel auf `data.gr.ch`, alle `data-bs`-Vorkommen ersetzt), `uv.lock` entsprechend neu aufgelöst.
 - Severity: niedrig
 - Kategorie: Struktur
 - Fundstelle: pyproject.toml:2-4 (`name = "data-bs-mcp"`, `description = "MCP server for data.bs.ch..."`), README.md:1, README.md:24 (`uvx --from git+https://github.com/DCC-BS/mcp-data-bs ...`)
@@ -293,6 +339,7 @@ WantedBy=multi-user.target
 
 ## A18. README-Formatliste weicht vom Tool ab
 
+- Umsetzung: **umgesetzt** (Commit 29356e1). README.md-Formatliste auf `csv, json, geojson, xlsx, shp, parquet` gekürzt (deckungsgleich mit dem `Literal` in `export_dataset_url`, main.py:404); README-Tools-Abschnitt zudem um `get_dataset_facets` und `get_export` ergänzt, die vorher gar nicht dokumentiert waren.
 - Severity: niedrig
 - Kategorie: Struktur
 - Fundstelle: README.md:172 («Formats: csv, json, geojson, xlsx, shp, parquet, gpx, kml, rdfxml, jsonld, turtle») vs. main.py:358 (`Literal["csv", "json", "geojson", "xlsx", "shp", "parquet"]`)
@@ -315,6 +362,8 @@ WantedBy=multi-user.target
 ---
 
 # Teil B: Neue Tool-Vorschläge (Basis OpenAPI)
+
+Status: **offen** — keiner dieser Vorschläge wurde in diesem Durchgang umgesetzt (nicht Teil der Befundliste, sondern Erweiterungsvorschläge; auf Zuruf umsetzbar).
 
 ## B1. get_record
 
@@ -368,6 +417,8 @@ WantedBy=multi-user.target
 
 # Teil C: SKILL.md Vorschläge
 
+Status: **offen** — SKILL.md wurde in diesem Durchgang nicht verändert, nur `main.py`, `pyproject.toml`, `README.md` und `uv.lock`. Da mehrere Code-Bugs (A2, A3, A19), auf die sich C2, C3 und C6 als Workaround-Dokumentation bezogen, jetzt behoben sind, verschiebt sich deren Dringlichkeit; Details in den jeweiligen Einträgen unten.
+
 Zeilenangaben beziehen sich auf die SKILL.md aus `skills/ogd-graubuenden.skill` (identisch mit der hochgeladenen Version, MD5-verifiziert).
 
 Gesamturteil: Die vier Kernpatterns sind abgedeckt und grösstenteils präzise. Facet Inspection (Z. 74-85, 201-221) und die get_export-Schwelle (Z. 100-116) sind klar und mit dem Tool-Verhalten konsistent. Backtick-Escaping (Z. 144-149) ist über den odsql_name-Mechanismus gut gelöst. Die dataset_uid-Äquivalenz fehlt vollständig.
@@ -376,6 +427,7 @@ Mehrere fachliche Aussagen des Skills sind durch die v2.1-ODSQL-Referenz nun wö
 
 ## C1. Falsche Kausalität bei der 100-Zeilen-Kappung
 
+- Umsetzung: **offen**. Ergänzend relevant: `get_records` liefert bei Kappung jetzt ein `note`-Feld (Fix A12), das den Hinweis in der Praxis teilweise entschärft, aber SKILL.md sollte trotzdem korrigiert werden.
 - Fundstelle: SKILL.md Z. 100 («der Server kappt auf 100») und Z. 172
 - Problem: Faktisch kappt der Connector clientseitig (main.py:263 `min(limit, max_limit)`), nicht der ODS-Server; der Server würde limit>100 mit 400 ablehnen. Für das Agentenverhalten gleichwertig, aber beim Debugging irreführend (Agent sucht den Fehler serverseitig).
 - Vorher: «auch wenn `limit` höher gesetzt wird (der Server kappt auf 100)»
@@ -383,19 +435,22 @@ Mehrere fachliche Aussagen des Skills sind durch die v2.1-ODSQL-Referenz nun wö
 
 ## C2. records_count-Bug nicht erwähnt (bis Fix A3 deployed ist)
 
+- Umsetzung: **erledigt sich durch A3**, sofern Commit 29356e1 deployed wird. Der zugrunde liegende Code-Bug ist behoben; die ursprünglich vorgeschlagene Workaround-Notiz im Skill ist damit hinfällig und sollte NICHT mehr ergänzt werden. Solange der Pi noch auf einer älteren main.py-Version läuft, gilt die Ergänzung unten weiterhin.
 - Fundstelle: SKILL.md Z. 34-53 (Schritt 1)
-- Problem: `get_datasets` liefert aktuell immer `records_count: null` (Befund A3). Ein Agent, der die Grösse aus dem Suchergebnis ablesen will, erhält keine Information und könnte fälschlich von einem kleinen Datensatz ausgehen.
-- Ergänzung (nach dem Suchbeispiel): «`records_count` ist in den Suchresultaten aktuell nicht befüllt. Die verlässliche Zeilenzahl liefert `get_dataset` (Feld `records_count`). Vor jedem `get_export` ohne Filter die Grösse dort prüfen.» (Nach Deployment von Fix A3 anpassen.)
+- Problem: `get_datasets` lieferte vor dem Fix immer `records_count: null` (Befund A3). Ein Agent, der die Grösse aus dem Suchergebnis ablesen will, erhält keine Information und könnte fälschlich von einem kleinen Datensatz ausgehen.
+- Ergänzung (nur solange A3 nicht deployed ist; nach dem Deploy des main.py-Fixes ersatzlos streichen bzw. gar nicht erst einfügen): «`records_count` ist in den Suchresultaten aktuell nicht befüllt. Die verlässliche Zeilenzahl liefert `get_dataset` (Feld `records_count`). Vor jedem `get_export` ohne Filter die Grösse dort prüfen.»
 
 ## C3. get_export ohne Filter auf grossen Datensätzen: Warnung fehlt
 
+- Umsetzung: **teilweise durch A2 entschärft, SKILL.md-Ergänzung weiterhin offen**. `get_export` deckelt jetzt serverseitig auf `EXPORT_MAX_ROWS = 20000` und meldet `truncated: true` (main.py:449), das OOM-/Kontext-Blowup-Risiko aus A2 ist damit gebannt. Ein ungefilterter Aufruf auf einem 344k-Zeilen-Datensatz liefert also keinen Absturz mehr, aber weiterhin nur einen stillschweigend unvollständigen Ausschnitt, wenn der Agent `truncated` nicht auswertet. Die SKILL.md-Ergänzung bleibt sinnvoll, jetzt mit Fokus auf `truncated` statt auf Absturzvermeidung.
 - Fundstelle: SKILL.md Z. 106-116 (Schritt 6)
-- Problem: get_export wird als Standardweg ohne Zeilenlimit beworben, ohne Warnung vor ungefiltertem Volltabellen-Abruf (344k Zeilen bei STATPOP-Datensätzen). Das sprengt Kontextfenster und belastet den Pi (Befund A2).
+- Problem: get_export wird als Standardweg ohne Zeilenlimit beworben, ohne Warnung vor ungefiltertem Volltabellen-Abruf (344k Zeilen bei STATPOP-Datensätzen).
 - Vorher: «Holt die gefilterten oder aggregierten Daten serverseitig ... und gibt sie inline zurück, ohne Zeilenlimit.»
-- Nachher: «Holt die gefilterten oder aggregierten Daten serverseitig und gibt sie inline zurück, ohne hartes Zeilenlimit. IMMER mit `where`, `group_by` oder `limit` einschränken. Vorher via `get_dataset` die `records_count` prüfen: über ~20'000 Zeilen nie ungefiltert abrufen, stattdessen aggregieren (`group_by`) oder `export_dataset_url` für den Download anbieten.»
+- Nachher: «Holt die gefilterten oder aggregierten Daten serverseitig und gibt sie inline zurück. Ohne `limit` gilt ein Deckel von 20'000 Zeilen; bei mehr Treffern liefert die Antwort `truncated: true`. Bei `truncated: true` mit `where`/`group_by` einschränken oder `export_dataset_url` für den Download anbieten, nicht stillschweigend mit unvollständigen Daten weiterrechnen.»
 
 ## C4. Reservierte Wortliste unvollständig und leicht abweichend
 
+- Umsetzung: **Code-seitig behoben (A7), SKILL.md-Text weiterhin offen**. `ODS_RESERVED` in main.py ist korrigiert, die in SKILL.md Z. 148 abgedruckte Liste ist davon unabhängig und weiterhin veraltet.
 - Fundstelle: SKILL.md Z. 148
 - Problem: Die Auswahl-Liste spiegelt die (unvollständige) Code-Liste. Es fehlen u.a. `search`, `quarter`, `dayofweek`, `ifnull`, `lower`, `upper`; dafür ist `date` gelistet, das in der offiziellen Keyword-Liste (in v2.0 und v2.1 identisch) nicht vorkommt. Da der Skill primär auf `odsql_name` verweist, ist der Schaden begrenzt, aber Liste und Realität sollten übereinstimmen (zusammen mit Fix A7).
 - Ergänzung: Liste durch die Spec-Liste ersetzen oder kürzen auf: «Reservierte Wörter siehe API-Doku; im Zweifel schaden Backticks nie: `` `feld` `` ist immer gültig.»
@@ -408,10 +463,10 @@ Mehrere fachliche Aussagen des Skills sind durch die v2.1-ODSQL-Referenz nun wö
 
 ## C6. Semantik von total_count im semantischen Modus fehlt
 
+- Umsetzung: **erledigt sich durch A19**, sofern Commit 29356e1 deployed ist und `vector_similarity_threshold()` auf data.gr.ch funktioniert (siehe offene Live-Verifikation bei A19). `get_datasets` filtert im semantischen Modus jetzt zusätzlich über `where`, `total_count` sollte damit die tatsächliche Treffermenge sein. Solange die Live-Verifikation aussteht, gilt die ursprüngliche Skill-Ergänzung als Absicherung weiterhin.
 - Fundstelle: SKILL.md Z. 34-44 (Schritt 1)
-- Problem: Im semantischen Modus wird der Katalog gerankt, nicht gefiltert; `total_count` entspricht dann nicht der Treffermenge (das Tool-Docstring in main.py:139-141 dokumentiert das, der Skill nicht). Die v2.1-Referenz bestätigt: `vector_similarity()` in `order_by` «returns all catalog results». Ein Agent könnte «47 Treffer» berichten, obwohl das die Katalog- bzw. Ranking-Grundmenge ist.
-- Ergänzung: «Im `semantic`-Modus ist `total_count` NICHT die Zahl relevanter Treffer (der ganze Katalog wird gerankt). Relevanz selbst beurteilen, `total_count` nicht als Trefferzahl kommunizieren.»
-- Nachhaltige Lösung ist serverseitig: Befund A19 (Umstellung auf `vector_similarity_threshold()` im `where`); danach ist `total_count` aussagekräftig und dieser Skill-Hinweis kann wieder entfallen.
+- Problem: Im semantischen Modus wurde vor dem Fix nur sortiert, nicht gefiltert; `total_count` entsprach dann nicht der Treffermenge. Die v2.1-Referenz bestätigte: `vector_similarity()` in `order_by` «returns all catalog results». Ein Agent könnte «47 Treffer» berichten, obwohl das die Katalog- bzw. Ranking-Grundmenge war.
+- Ergänzung (nur solange A19 nicht deployed und verifiziert ist): «Im `semantic`-Modus ist `total_count` NICHT die Zahl relevanter Treffer (der ganze Katalog wird gerankt). Relevanz selbst beurteilen, `total_count` nicht als Trefferzahl kommunizieren.»
 
 ## C7. Fallstricke, die der Skill abdeckt (bestätigt) und verbleibende Lücken
 
