@@ -160,14 +160,19 @@ at the ngrok layer (for example ngrok's basic-auth or a traffic policy).
 ## Tools
 
 ### `get_datasets`
-Search and list available datasets. Each result includes `records_count`.
+Search and list available datasets. Each result includes `records_count` plus
+the metadata-screening fields `license_url`, `update_frequency`,
+`metadata_languages` and `description_length` (length of the full plain-text
+description), so questions like "which datasets have incomplete metadata?" can
+be answered without fetching each dataset individually.
 
 Two search modes:
 - `semantic` (default): filters and ranks the catalog by meaning using
-  `vector_similarity_threshold` (an automatic relevance cut-off) plus
-  `vector_similarity` ordering. Best for natural-language / conceptual queries;
-  matches synonyms and other languages. `total_count` is the number of relevant
-  matches.
+  `vector_similarity_threshold`, which applies an automatic relevance cut-off
+  and orders by relevance in one step (ODS rejects a separate
+  `vector_similarity` order_by as "multiple score functions"). Best for
+  natural-language / conceptual queries; matches synonyms and other languages.
+  `total_count` is the number of relevant matches.
 - `lexical`: classic full-text match on the exact terms.
 
 ```
@@ -195,6 +200,18 @@ results at 100 rows; use `get_export` for more.
 
 ```
 get_records(dataset_id="dvs_awt_soci_20250507", where="anzahl_personen > 1000", limit=100, refine="jahr:2024")
+```
+
+### `get_dataset_metadata`
+Get the complete raw `metas` of a dataset: all templates (`default`, `dcat`,
+`dcat_ap_ch`, `custom`) with every language variant (`*_de/_it/_en`) and the
+untruncated description. Meant for metadata quality work (auditing
+completeness — contact email, license, frequency, temporal/spatial coverage —
+or loading context for metadata editing, e.g. with the Metadata-Wizard app);
+use `get_dataset` for the compact summary.
+
+```
+get_dataset_metadata(dataset_id="dvs_awt_soci_20250507")
 ```
 
 ### `get_record`
