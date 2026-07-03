@@ -101,7 +101,10 @@ def _odsql_safe(name: str) -> str:
         "(default) ranks the catalog by meaning using natural-language queries "
         "(handles synonyms and other languages); 'lexical' does a classic full-text "
         "match on the exact terms. Use semantic for conceptual discovery, lexical for "
-        "precise term/name lookups."
+        "precise term/name lookups. "
+        "Narrow results with refine/exclude using \"facet:value\" (catalog facets: "
+        "publisher, theme, keyword, modified, language, features); discover exact "
+        "values via get_facets. Metadata language defaults to de (set lang for en/fr)."
     ),
 )
 async def get_datasets(
@@ -127,12 +130,15 @@ async def get_datasets(
             vector_similarity (best for natural-language/conceptual queries, also
             matches synonyms and other languages); "lexical" filters by exact
             full-text match. Ignored when search is empty.
-        refine: Facet filter to limit results (e.g., "publisher:Statistisches Amt")
+        refine: Facet filter "facet:value" to limit results (catalog facets:
+            publisher, theme, keyword, modified, language, features; discover
+            values via get_facets). Example: "publisher:Statistisches Amt".
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
         order_by: Field to sort results (e.g., "modified desc", "title asc").
             Ignored in semantic mode, where results are ordered by relevance.
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_app_metas: Include application metadata in response
+        lang: Language for metadata (default: "de")
 
     Returns:
         Dictionary with total_count and results array containing dataset metadata.
@@ -171,7 +177,14 @@ async def get_datasets(
 
 @mcp.tool(
     title="Get Dataset Metadata",
-    description="Get detailed metadata for a specific dataset including field definitions, schema, publisher info, and record count. Use this to understand a dataset's structure before querying records.",
+    description=(
+        "Get detailed metadata for a specific dataset: title, description, theme, "
+        "keywords, publisher, record count and a fields array (name, odsql_name, "
+        "type, description). Call this before querying records; use each field's "
+        "odsql_name verbatim in get_records/get_export select and where clauses "
+        "(it is already backtick-escaped for names starting with a digit or "
+        "matching reserved words)."
+    ),
 )
 async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
     """
@@ -182,7 +195,9 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
         lang: The language of the dataset metadata (default: "de")
 
     Returns:
-        Dataset metadata including title, description, theme, keywords, etc.
+        Dataset metadata (title, description, theme, keywords, record count)
+        plus a fields array with name, odsql_name, type and description. Use
+        odsql_name verbatim in get_records/get_export select and where clauses.
     """
     data = await fetch(f"/catalog/datasets/{dataset_id}", params={"lang": lang})
     metas = data.get("metas", {})
@@ -211,8 +226,13 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
 @mcp.tool(
     title="Query Dataset Records",
     description=(
-        "Query and filter records from a dataset using ODSQL syntax. "
+        "Query and filter records from a dataset using ODSQL (Opendatasoft's "
+        "SQL-like query language). "
         "Limited to 100 rows without group_by (use get_export for larger result sets). "
+        "Workflow: call get_dataset first for field names/types, and "
+        "get_dataset_facets to verify exact spellings/values before filtering "
+        "categorical fields with where or refine — a misspelled value silently "
+        "returns 0 rows. "
         "ODSQL tips: use backtick-quoted field names for fields starting with a digit "
         "or matching reserved words (e.g. `25_29_jahre`, `year`). "
         "Date literals use date'YYYY-MM-DD' (not quoted strings). "
@@ -249,11 +269,11 @@ async def get_records(
         limit: Number of items to return (default: 10, max: 100 without group_by,
             max: 20000 with group_by). Use get_export for larger result sets.
         offset: Index of first item to return (default: 0)
-        refine: Facet filter to limit results (e.g., "city:Paris", "jahr:2024")
+        refine: Facet filter to limit results (e.g., "gemeinde:Chur", "jahr:2024")
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
         lang: Language for formatting (e.g., "en", "de", "fr")
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
-        include_links: Include HATEOAS links in response
+        include_links: Include navigation links in response
 
     Returns:
         Dictionary with total_count and results array containing record data.
@@ -286,7 +306,8 @@ async def get_records(
     title="Get Catalog Facets",
     description=(
         "Get available filter values for categorizing datasets in the catalog "
-        "(publisher, theme, keyword, etc.). For field-level facets within a "
+        "(publisher, theme, keyword, etc.). Feed the returned values into the "
+        "refine/exclude parameters of get_datasets. For field-level facets within a "
         "specific dataset (e.g. all municipalities or categories), use "
         "get_dataset_facets instead."
     ),
@@ -318,7 +339,10 @@ async def get_facets(facet: str | None = None) -> dict:
     description=(
         "List the facet values of a dataset's fields (dimension members, e.g. all "
         "municipalities or categories). Use before building WHERE/refine clauses to "
-        "verify exact spellings and available values."
+        "verify exact spellings and available values. Only fields configured as "
+        "facets appear here; for other fields derive the values via get_records "
+        "with group_by. For catalog-level facets (publisher, theme, ...) across all "
+        "datasets, use get_facets instead."
     ),
 )
 async def get_dataset_facets(
@@ -335,7 +359,8 @@ async def get_dataset_facets(
         lang: Language for metadata (default: "de")
 
     Returns:
-        Dictionary with facet_groups array containing field names and their values
+        Dictionary with a facets array containing field names and their values
+        with counts.
     """
     params: dict[str, str | int] = {"lang": lang}
     if facet:
@@ -349,6 +374,7 @@ async def get_dataset_facets(
     description=(
         "Generate a download URL for exporting a dataset in various formats. "
         "Supports filtering, aggregation, and sorting via ODSQL — no row limit. "
+        "CSV exports include a BOM (read with utf-8-sig encoding). "
         "Note: the URL is only useful if the client can fetch it directly. "
         "If network access is restricted, use get_export instead."
     ),
@@ -368,14 +394,14 @@ async def export_dataset_url(
 
     Args:
         dataset_id: The dataset identifier (e.g., "100113")
-        format: Export format (csv, json, geojson, xlsx, shp, parquet)
+        format: Export format (csv, json, geojson, xlsx, shp, parquet). CSV
+            exports use a BOM; read with utf-8-sig encoding.
         select: Select expression for fields/aggregations
         where: ODSQL WHERE clause to filter exported records
         group_by: Grouping expression for aggregations
         order_by: Sort expression
         limit: Max number of rows to export
-        lang: Language for metadata (default: "de"). CSV exports use BOM;
-            read with utf-8-sig encoding.
+        lang: Language for metadata (default: "de")
 
     Returns:
         Full URL to download the exported dataset
@@ -391,9 +417,12 @@ async def export_dataset_url(
 @mcp.tool(
     title="Fetch Export Data",
     description=(
-        "Fetch filtered/aggregated records server-side and return them inline (JSON). "
-        "No row limit. Use this instead of get_records when you need more than 100 rows "
-        "or when the client cannot fetch export URLs directly."
+        "Fetch filtered/aggregated records server-side and return them inline (JSON), "
+        "using the same ODSQL syntax as get_records. No row limit. Use this instead "
+        "of get_records when you need more than 100 rows or when the client cannot "
+        "fetch export URLs directly. Results land in the context — always narrow with "
+        "select/where/group_by or set limit to keep responses small; for bulk "
+        "downloads hand out export_dataset_url instead."
     ),
 )
 async def get_export(
@@ -411,7 +440,7 @@ async def get_export(
     Args:
         dataset_id: The dataset identifier
         select: Select expression for fields/aggregations
-        where: ODSQL WHERE clause
+        where: ODSQL WHERE clause (same syntax and tips as get_records)
         group_by: Grouping expression
         order_by: Sort expression
         limit: Max rows to return

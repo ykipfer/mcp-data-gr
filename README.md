@@ -185,4 +185,4 @@ Get download URL for dataset export.
 export_dataset_url(dataset_id="100113", format="csv", where="sensornr=240")
 ```
 
-Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`, `gpx`, `kml`, `rdfxml`, `jsonld`, `turtle`
+Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`
