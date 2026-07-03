@@ -14,6 +14,22 @@ uv sync
 uv run main.py
 ```
 
+## Transport
+
+The transport is configured via `MCP_TRANSPORT` in the `.env` file next to
+`main.py` (like `DATA_PORTAL_DOMAIN`, the process environment is not
+consulted):
+
+| Variable | Values | Default |
+| --- | --- | --- |
+| `MCP_TRANSPORT` | `stdio`, `streamable-http` | `stdio` (when missing or empty) |
+
+- `stdio`: the MCP client launches the server as a subprocess and talks over
+  stdin/stdout — use this for Claude Desktop, `docker run -i`, or the MCP
+  inspector.
+- `streamable-http`: the server listens on `0.0.0.0:8000` for remote access,
+  e.g. behind ngrok/systemd.
+
 ## Debug
 ```bash
 npx @modelcontextprotocol/inspector uv run main.py

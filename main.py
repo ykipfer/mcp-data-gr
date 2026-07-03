@@ -429,7 +429,7 @@ async def get_export(
 
 
 def main():
-    mcp.run(transport="streamable-http")
+    mcp.run(transport=_config.get("MCP_TRANSPORT") or "stdio")
 
 
 if __name__ == "__main__":
