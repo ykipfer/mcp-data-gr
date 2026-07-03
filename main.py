@@ -101,15 +101,20 @@ def _simplify_dataset(data: dict) -> dict:
     metas = data.get("metas", {})
     default = metas.get("default", {})
     explore = metas.get("explore", {})
+    plain = " ".join(re.sub(r"<[^>]+>", " ", _to_str(default.get("description"))).split())
     return {
         "dataset_id": data.get("dataset_id"),
         "title": _to_str(default.get("title")),
-        "description": _strip_html(_to_str(default.get("description"))),
+        "description": plain[:800] + ("..." if len(plain) > 800 else ""),
+        "description_length": len(plain),
         "theme": _to_str(default.get("theme")),
         "keyword": default.get("keyword", []) or [],
         "publisher": _to_str(default.get("publisher")),
         "modified": default.get("modified"),
         "language": _as_list(default.get("language")),
+        "metadata_languages": _as_list(default.get("metadata_languages")),
+        "license_url": default.get("license_url"),
+        "update_frequency": default.get("update_frequency"),
         "records_count": default.get("records_count") or explore.get("records_count"),
     }
 
@@ -171,7 +176,9 @@ async def get_datasets(
         lang: Metadata language of the results (default: "de")
 
     Returns:
-        Dictionary with total_count and results array containing dataset metadata.
+        Dictionary with total_count and results array containing dataset metadata,
+        including license_url, update_frequency, metadata_languages and
+        description_length for metadata-quality screening across the catalog.
         In semantic mode an automatic relevance threshold filters the catalog, so
         total_count reflects the number of relevant matches, ranked most relevant
         first.
@@ -189,8 +196,9 @@ async def get_datasets(
             if order_by:
                 params["order_by"] = order_by
         else:
+            # vector_similarity_threshold filters AND ranks by relevance; adding a
+            # vector_similarity order_by is rejected by ODS ("multiple score functions").
             params["where"] = f'vector_similarity_threshold("{query}")'
-            params["order_by"] = f'vector_similarity("{query}") desc'
     elif order_by:
         params["order_by"] = order_by
     data = await fetch("/catalog/datasets", params)
@@ -240,6 +248,35 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
             for f in data.get("fields", [])
         ],
     }
+
+
+@mcp.tool(
+    title="Get Dataset Raw Metadata",
+    description=(
+        "Get the complete raw metadata (metas) of a dataset: all templates "
+        "(default, dcat, dcat_ap_ch, custom) with every language variant "
+        "(*_de/_it/_en) and the untruncated description. Use for metadata "
+        "quality work — auditing completeness (contact email, license, "
+        "frequency, temporal/spatial coverage) or loading context for "
+        "metadata editing. For a compact summary before querying records, "
+        "use get_dataset instead."
+    ),
+)
+async def get_dataset_metadata(dataset_id: str) -> dict:
+    """
+    Get the full, untruncated metadata of a dataset.
+
+    Args:
+        dataset_id: The dataset identifier (e.g., "100113")
+
+    Returns:
+        Dictionary with dataset_id and the raw metas object exactly as the
+        portal returns it (templates default, dcat, dcat_ap_ch, custom).
+        Deliberately fetched without a lang parameter: lang makes ODS localize
+        the response and drop the *_de/_it/_en language variants.
+    """
+    data = await fetch(f"/catalog/datasets/{dataset_id}")
+    return {"dataset_id": data.get("dataset_id"), "metas": data.get("metas", {})}
 
 
 @mcp.tool(
