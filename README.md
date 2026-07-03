@@ -16,18 +16,27 @@ uv sync
 uv run main.py
 ```
 
-This starts a **Streamable HTTP** MCP server listening on `0.0.0.0:8000`; the
-MCP endpoint is `http://localhost:8000/mcp`. The transport is HTTP, not stdio,
-so MCP clients connect via that URL (see [Configuration](#configuration)).
+By default this starts a **stdio** MCP server (the MCP client spawns the
+process and talks over stdin/stdout). To run it as a **Streamable HTTP**
+server listening on `0.0.0.0:8000` (MCP endpoint `http://localhost:8000/mcp`)
+set the `MCP_TRANSPORT` environment variable:
+
+```bash
+MCP_TRANSPORT=streamable-http uv run main.py
+```
+
+See [Configuration](#configuration) for the variable reference and client
+setup for both transports.
 
 ## Debug
 
-Start the server, then point the MCP Inspector at the running endpoint (choose
-the *Streamable HTTP* transport and enter `http://localhost:8000/mcp`):
+Start the server in HTTP mode, then point the MCP Inspector at the running
+endpoint (choose the *Streamable HTTP* transport and enter
+`http://localhost:8000/mcp`):
 
 ```bash
-uv run main.py            # in one terminal
-npx @modelcontextprotocol/inspector   # in another, then connect to the URL
+MCP_TRANSPORT=streamable-http uv run main.py   # in one terminal
+npx @modelcontextprotocol/inspector            # in another, then connect to the URL
 ```
 
 ### Install with uvx
@@ -67,18 +76,45 @@ docker run --rm -p 8000:8000 mcp-data-gr
 ```
 
 The server is then reachable at `http://localhost:8000/mcp`. Point your MCP
-client at that URL (see [Configuration](#configuration)).
+client at that URL (see [Configuration](#configuration)). The image sets
+`MCP_TRANSPORT=streamable-http`; override with `-e MCP_TRANSPORT=stdio` if
+needed.
 
 To change the data portal domain, edit `.env` and rebuild the image.
 
 ## Configuration
 
-The server speaks Streamable HTTP, so clients connect by **URL**, not by
-spawning a subprocess. Start the server (`uv run main.py` or via Docker), then
-add it to your MCP client pointing at `http://localhost:8000/mcp`.
+### Environment variables
 
-For clients that support HTTP MCP servers directly (e.g. Cursor `~/.cursor/mcp.json`,
-VS Code):
+- `MCP_TRANSPORT` — MCP transport to use: `stdio` or `streamable-http`.
+  Default: `stdio` (used when the variable is missing or empty; any other
+  value fails at startup). Set it in the process environment (systemd
+  `Environment=`, `docker -e`, or the client config's `env` block) — entries
+  in the `.env` file have no effect for this variable.
+
+**stdio vs. streamable-http:** with `stdio` the MCP client starts the server
+itself as a subprocess and talks over stdin/stdout — nothing listens on a
+port. With `streamable-http` the server runs standalone on `0.0.0.0:8000` and
+clients connect to the URL `http://localhost:8000/mcp`.
+
+### Client setup
+
+For the default stdio transport, let the client spawn the server:
+
+```json
+{
+  "mcpServers": {
+    "data-gr": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-data-gr", "main.py"]
+    }
+  }
+}
+```
+
+For Streamable HTTP, start the server first (`MCP_TRANSPORT=streamable-http
+uv run main.py` or via Docker), then point clients that support HTTP MCP
+servers directly (e.g. Cursor `~/.cursor/mcp.json`, VS Code) at the URL:
 
 ```json
 {
@@ -90,7 +126,8 @@ VS Code):
 }
 ```
 
-For clients that only support stdio, bridge to the URL with
+For clients that only support stdio but need to reach a server running
+elsewhere (e.g. the ngrok setup below), bridge to the URL with
 [`mcp-remote`](https://github.com/geelen/mcp-remote):
 
 ```json
@@ -107,7 +144,10 @@ For clients that only support stdio, bridge to the URL with
 ### Production (Raspberry Pi + ngrok)
 
 The server is intended to run as a background service on a host (e.g. a
-Raspberry Pi) and be exposed with ngrok, which tunnels the local port 8000:
+Raspberry Pi) and be exposed with ngrok, which tunnels the local port 8000.
+The service unit must set the transport, e.g. in systemd:
+`Environment=MCP_TRANSPORT=streamable-http` — otherwise the server starts in
+stdio mode and nothing listens on port 8000.
 
 ```bash
 ngrok http 8000
@@ -207,7 +247,7 @@ Get download URL for dataset export. Optional `use_labels`, `epsg` (e.g. `2056` 
 Swiss LV95, for geo datasets) and `compressed`.
 
 ```
-export_dataset_url(dataset_id="dvs_awt_soci_20250507", format="csv", refine="jahr:2024")
+export_dataset_url(dataset_id="dvs_awt_soci_20250507", format="csv", where="jahr=2024")
 ```
 
 Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`
