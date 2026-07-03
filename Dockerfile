@@ -10,4 +10,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY main.py .env README.md ./
 RUN uv sync --frozen --no-dev
 
+EXPOSE 8000
+
 ENTRYPOINT ["uv", "run", "main.py"]
