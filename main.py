@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Annotated, Literal
@@ -124,8 +125,6 @@ ODS_RESERVED = {
     "lower", "max", "millisecond", "min", "minute", "month", "not", "null",
     "quarter", "range", "search", "second", "select", "sum", "top", "true",
     "upper", "where", "year",
-    # Not in the spec list but harmless to backtick defensively.
-    "like", "in", "date", "datetime", "from", "offset",
 }
 
 
@@ -153,8 +152,6 @@ async def get_datasets(
     refine: str | None = None,
     exclude: str | None = None,
     order_by: str | None = None,
-    timezone: str | None = None,
-    include_app_metas: bool = False,
     lang: str = "de",
 ) -> dict:
     """
@@ -164,16 +161,14 @@ async def get_datasets(
         limit: Number of items to return (default: 10, max: 100)
         offset: Index of first item to return (default: 0)
         search: Search string. Interpreted according to search_mode.
-        search_mode: "semantic" (default) filters and ranks the catalog by meaning via
-            vector_similarity_threshold (best for natural-language/conceptual queries,
-            also matches synonyms and other languages); "lexical" filters by exact
-            full-text match. Ignored when search is empty.
-        refine: Facet filter to limit results (e.g., "publisher:Statistisches Amt")
+        search_mode: "semantic" (default) or "lexical", see the tool description.
+            Ignored when search is empty.
+        refine: Facet filter to limit results (e.g., "publisher:Statistisches Amt");
+            valid facet names and values come from get_facets
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
         order_by: Field to sort results (e.g., "modified desc", "title asc").
             Ignored in semantic mode, where results are ordered by relevance.
-        timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
-        include_app_metas: Include application metadata in response
+        lang: Metadata language of the results (default: "de")
 
     Returns:
         Dictionary with total_count and results array containing dataset metadata.
@@ -181,17 +176,11 @@ async def get_datasets(
         total_count reflects the number of relevant matches, ranked most relevant
         first.
     """
-    params: dict[str, str | int] = {"limit": min(limit, 100), "offset": offset}
+    params: dict[str, str | int] = {"limit": min(limit, 100), "offset": offset, "lang": lang}
     if refine:
         params["refine"] = refine
     if exclude:
         params["exclude"] = exclude
-    if timezone:
-        params["timezone"] = timezone
-    if lang:
-        params["lang"] = lang
-    if include_app_metas:
-        params["include_app_metas"] = "true"
     normalized_search = " ".join(search.split()) if search else ""
     if normalized_search:
         query = _escape_odsql(normalized_search)
@@ -224,7 +213,10 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
         lang: The language of the dataset metadata (default: "de")
 
     Returns:
-        Dataset metadata including title, description, theme, keywords, etc.
+        Dataset metadata (title, description, theme, keywords, publisher,
+        records_count) and a fields array (name, type, description) with
+        odsql_name — the escaped form of each field name to use verbatim in
+        get_records select/where/group_by expressions.
     """
     data = await fetch(f"/catalog/datasets/{dataset_id}", params={"lang": lang})
     metas = data.get("metas", {})
@@ -275,8 +267,11 @@ async def get_dataset_attachments(dataset_id: str) -> dict:
 @mcp.tool(
     title="Query Dataset Records",
     description=(
-        "Query and filter records from a dataset using ODSQL syntax. "
+        "Query and filter records from a dataset using ODSQL (Opendatasoft Query "
+        "Language, SQL-like) syntax. "
         "Limited to 100 rows without group_by (use get_export for larger result sets). "
+        "Before filtering on categorical fields, call get_dataset_facets to verify the "
+        "exact value spellings, and get_dataset for field names and types. "
         "ODSQL tips: use backtick-quoted field names for fields starting with a digit "
         "or matching reserved words (e.g. `25_29_jahre`, `year`). "
         "Date literals use date'YYYY-MM-DD' (not quoted strings). "
@@ -297,7 +292,6 @@ async def get_records(
     exclude: str | None = None,
     lang: str | None = None,
     timezone: str | None = None,
-    include_links: bool = False,
 ) -> dict:
     """
     Query records from a dataset with ODSQL filtering.
@@ -317,7 +311,6 @@ async def get_records(
         exclude: Facet filter to exclude values (e.g., "modified:2019/12")
         lang: Language for formatting (e.g., "en", "de", "fr")
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
-        include_links: Include HATEOAS links in response
 
     Returns:
         Dictionary with total_count and results array containing record data.
@@ -342,8 +335,6 @@ async def get_records(
         params["lang"] = lang
     if timezone:
         params["timezone"] = timezone
-    if include_links:
-        params["include_links"] = "true"
     result = await fetch(f"/catalog/datasets/{dataset_id}/records", params)
     if capped < limit:
         result["note"] = f"limit auf {capped} gekappt; get_export fuer mehr Zeilen verwenden"
@@ -388,13 +379,14 @@ async def get_record(
         "get_dataset_facets instead."
     ),
 )
-async def get_facets(facet: str | None = None) -> dict:
+async def get_facets(
+    facet: Literal["publisher", "keyword", "theme", "features", "modified", "language"] | None = None,
+) -> dict:
     """
     Get available facet values for filtering datasets.
 
     Args:
-        facet: Specific facet to retrieve: "publisher", "keyword", "theme",
-            "features", "modified", "language". If None, returns all facets.
+        facet: Specific facet to retrieve. If None, returns all facets.
 
     Returns:
         Dictionary with facet name and array of values with counts
@@ -440,7 +432,8 @@ async def get_dataset_facets(
         lang: Language for metadata (default: "de")
 
     Returns:
-        Dictionary with facets array containing field names and their values
+        Dictionary with facets array containing field names and their values.
+        Fields that are not facet-enabled are absent from the response.
     """
     params: dict[str, str | int] = {"lang": lang}
     if facet:
@@ -482,8 +475,9 @@ async def list_export_formats(dataset_id: str) -> dict:
     description=(
         "Generate a download URL for exporting a dataset in various formats. "
         "Supports filtering, aggregation, and sorting via ODSQL — no row limit. "
-        "Note: the URL is only useful if the client can fetch it directly. "
-        "If network access is restricted, use get_export instead."
+        "Use when the user wants a download link or file; if you need to read the "
+        "data yourself, use get_export instead. The URL is only useful if the "
+        "client can fetch it directly."
     ),
 )
 async def export_dataset_url(
@@ -592,12 +586,14 @@ async def get_export(
         where: ODSQL WHERE clause
         group_by: Grouping expression
         order_by: Sort expression
-        limit: Max rows to return (capped default applied when omitted)
+        limit: Max rows to return (default 20000 when omitted; the response
+            sets truncated=true if more rows exist)
         lang: Language for metadata (default: "de")
 
     Returns:
-        Dictionary with count, truncated flag, and results array. If truncated is
-        True, narrow with where/group_by or pass a higher limit.
+        Dictionary with count, truncated flag, and results array, returned inline
+        as JSON — prefer aggregating with group_by over dumping raw rows. If
+        truncated is True, narrow with where/group_by or pass a higher limit.
     """
     params = {k: v for k, v in {
         "select": select, "where": where, "group_by": group_by,
@@ -610,7 +606,7 @@ async def get_export(
 
 
 def main():
-    mcp.run(transport="streamable-http")
+    mcp.run(transport=os.getenv("MCP_TRANSPORT") or "stdio")
 
 
 if __name__ == "__main__":
