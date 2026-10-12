@@ -44,6 +44,11 @@ if not DOMAIN:
 DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
 BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 
+# Deliberate exception to the ".env only" rule: the Portal API key is the client
+# owner's credential and must never be committed (see docs/adr/0001-*.md).
+# Empty means unset. Never log or return this value.
+API_KEY = os.environ.get("DATA_PORTAL_API_KEY", "").strip()
+
 mcp = FastMCP(DOMAIN, host="0.0.0.0", port=8000)
 
 # Reuse one client so connections are pooled across tool calls.
@@ -51,6 +56,8 @@ _client = httpx.AsyncClient(
     base_url=BASE_URL,
     timeout=httpx.Timeout(30.0, connect=10.0),
     limits=httpx.Limits(max_connections=10),
+    # Header only, never the apikey query param: fetch() logs query params.
+    headers={"Authorization": f"Apikey {API_KEY}"} if API_KEY else {},
 )
 
 
@@ -69,6 +76,15 @@ async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> di
             "ODS 429: Domain-Quota erschoepft, spaeter erneut versuchen "
             f"(Retry-After: {response.headers.get('Retry-After', 'unbekannt')})"
         )
+    if response.status_code == 401:
+        # Built from the status code only, never the response body or the key.
+        message = (
+            "Portal API key ungültig oder abgelaufen"
+            if API_KEY
+            else "Portal erfordert Anmeldung: Portal API key setzen"
+        )
+        logger.warning("ODS 401 %s: %s", endpoint, message)
+        raise RuntimeError(message)
     if response.status_code >= 400:
         try:
             err = response.json()
@@ -97,6 +113,14 @@ def _strip_html(text: str, max_len: int = 800) -> str:
     return text[:max_len] + ("..." if len(text) > max_len else "")
 
 
+def _access_fields(data: dict) -> dict:
+    # NOTE: `visibility` is undocumented: it is not in the spec's `dataset` schema,
+    # but the live API returns it on both the list and the detail endpoint.
+    visibility = data.get("visibility")
+    restricted = {"restricted": True, "domain": False}.get(visibility)
+    return {"restricted": restricted, "data_visible": data.get("data_visible")}
+
+
 def _simplify_dataset(data: dict) -> dict:
     metas = data.get("metas", {})
     default = metas.get("default", {})
@@ -116,6 +140,7 @@ def _simplify_dataset(data: dict) -> dict:
         "license_url": default.get("license_url"),
         "update_frequency": default.get("update_frequency"),
         "records_count": default.get("records_count") or explore.get("records_count"),
+        **_access_fields(data),
     }
 
 
@@ -238,6 +263,7 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
         "modified": metas.get("default", {}).get("modified"),
         "language": _as_list(metas.get("default", {}).get("language")),
         "records_count": metas.get("default", {}).get("records_count"),
+        **_access_fields(data),
         "fields": [
             {
                 "name": f.get("name"),
@@ -551,13 +577,29 @@ async def export_dataset_url(
     Returns:
         Full URL to download the exported dataset
     """
+    visibility = None
+    if API_KEY:
+        # Top-level `visibility` is undocumented in the spec but returned by the live API.
+        detail = await fetch(f"/catalog/datasets/{dataset_id}")
+        visibility = detail.get("visibility") if isinstance(detail, dict) else None
+        if visibility == "restricted":
+            raise RuntimeError(
+                f"Dataset {dataset_id} ist ein Restricted dataset: Die Export-URL ist ohne "
+                "Portal API key nicht abrufbar. Daten stattdessen mit get_export holen."
+            )
     base = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
     query = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in {
         "select": select, "where": where, "group_by": group_by,
         "order_by": order_by, "limit": limit, "lang": lang,
         "use_labels": use_labels, "epsg": epsg, "compressed": compressed,
     }.items() if v is not None}
-    return f"{base}?{urlencode(query)}" if query else base
+    url = f"{base}?{urlencode(query)}" if query else base
+    if API_KEY and visibility not in ("domain", "restricted"):
+        url += (
+            "\n\nHinweis: Sichtbarkeit des Datensatzes unbekannt; die URL erfordert "
+            "evtl. Authentifizierung. Bei Problemen get_export verwenden."
+        )
+    return url
 
 
 @mcp.tool(
@@ -592,7 +634,10 @@ async def export_catalog_url(
     query = {k: v for k, v in {
         "select": select, "where": where, "order_by": order_by, "limit": limit,
     }.items() if v is not None}
-    return f"{base}?{urlencode(query)}" if query else base
+    url = f"{base}?{urlencode(query)}" if query else base
+    if API_KEY:
+        url += "\n\nHinweis: Die URL listet nur Public datasets (ohne Portal API key abgerufen)."
+    return url
 
 
 @mcp.tool(
@@ -643,7 +688,15 @@ async def get_export(
 
 
 def main():
-    mcp.run(transport=os.getenv("MCP_TRANSPORT") or "stdio")
+    transport = os.getenv("MCP_TRANSPORT") or "stdio"
+    if API_KEY and transport != "stdio":
+        # A key grants its owner's rights to everyone who can reach the server.
+        raise RuntimeError(
+            "DATA_PORTAL_API_KEY is set but MCP_TRANSPORT is "
+            f"'{transport}': a Portal API key is only allowed on a local stdio "
+            "instance. Unset DATA_PORTAL_API_KEY or use MCP_TRANSPORT=stdio."
+        )
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
