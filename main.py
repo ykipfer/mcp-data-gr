@@ -72,9 +72,18 @@ async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> di
             await asyncio.sleep(2 ** attempt)
     logger.info("ODS GET %s params=%s -> %s", endpoint, params, response.status_code)
     if response.status_code == 429:
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            body = {}
+        reset = body.get("reset_time") or response.headers.get("Retry-After") or "unbekannt"
+        call_limit, unit = body.get("call_limit"), body.get("limit_time_unit")
+        limit = f"{call_limit}/{unit}" if call_limit is not None and unit else "unbekannt"
         raise RuntimeError(
             "ODS 429: Domain-Quota erschoepft, spaeter erneut versuchen "
-            f"(Retry-After: {response.headers.get('Retry-After', 'unbekannt')})"
+            f"(Reset: {reset}, Limit: {limit})"
         )
     if response.status_code == 401:
         # Built from the status code only, never the response body or the key.
