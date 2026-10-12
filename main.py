@@ -76,6 +76,15 @@ async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> di
             "ODS 429: Domain-Quota erschoepft, spaeter erneut versuchen "
             f"(Retry-After: {response.headers.get('Retry-After', 'unbekannt')})"
         )
+    if response.status_code == 401:
+        # Built from the status code only, never the response body or the key.
+        message = (
+            "Portal API key ungültig oder abgelaufen"
+            if API_KEY
+            else "Portal erfordert Anmeldung: Portal API key setzen"
+        )
+        logger.warning("ODS 401 %s: %s", endpoint, message)
+        raise RuntimeError(message)
     if response.status_code >= 400:
         try:
             err = response.json()
