@@ -44,6 +44,11 @@ if not DOMAIN:
 DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
 BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 
+# Deliberate exception to the ".env only" rule: the Portal API key is the client
+# owner's credential and must never be committed (see docs/adr/0001-*.md).
+# Empty means unset. Never log or return this value.
+API_KEY = os.environ.get("DATA_PORTAL_API_KEY", "").strip()
+
 mcp = FastMCP(DOMAIN, host="0.0.0.0", port=8000)
 
 # Reuse one client so connections are pooled across tool calls.
@@ -51,6 +56,8 @@ _client = httpx.AsyncClient(
     base_url=BASE_URL,
     timeout=httpx.Timeout(30.0, connect=10.0),
     limits=httpx.Limits(max_connections=10),
+    # Header only, never the apikey query param: fetch() logs query params.
+    headers={"Authorization": f"Apikey {API_KEY}"} if API_KEY else {},
 )
 
 
@@ -643,7 +650,15 @@ async def get_export(
 
 
 def main():
-    mcp.run(transport=os.getenv("MCP_TRANSPORT") or "stdio")
+    transport = os.getenv("MCP_TRANSPORT") or "stdio"
+    if API_KEY and transport != "stdio":
+        # A key grants its owner's rights to everyone who can reach the server.
+        raise RuntimeError(
+            "DATA_PORTAL_API_KEY is set but MCP_TRANSPORT is "
+            f"'{transport}': a Portal API key is only allowed on a local stdio "
+            "instance. Unset DATA_PORTAL_API_KEY or use MCP_TRANSPORT=stdio."
+        )
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
