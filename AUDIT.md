@@ -27,6 +27,7 @@ Auf Anweisung wurden Sicherheits-/Betriebsbefunde zu Auth, ngrok und systemd (A1
 | A16 get_facets Hinweis | **umgesetzt** |
 | A17 Namens-/Doku-Altlasten | **umgesetzt** |
 | A18 README-Formatliste | **umgesetzt** |
+| A20 429-Meldung ohne reset_time | offen |
 | Teil B (neue Tools) | offen, Vorschlag |
 | Teil C (SKILL.md) | offen, Vorschlag |
 
@@ -216,6 +217,17 @@ ODS_RESERVED = {
 ```
 
   Danach ist `total_count` die tatsächliche Treffermenge; Docstring (main.py:139-141) und SKILL.md entsprechend anpassen. Hinweis der Referenz beachten: die Threshold-Methode kann in Randfällen relevante Treffer abschneiden; falls 0 Treffer, als Fallback ohne `where` wiederholen.
+
+## A20. 429-Meldung liest undokumentierten Retry-After-Header statt reset_time
+
+- Umsetzung: **offen**, Issue #8 (festgestellt 2026-10-12 beim Spec-Abgleich für den Portal API key, bewusst nicht in jenes Feature gebündelt)
+- Severity: niedrig
+- Kategorie: Code
+- Fundstelle: `fetch`, main.py:66-70
+- Status: bestätigt (Spec); Live-Verhalten bei 429 nicht reproduziert
+- Problem: Die 429-Meldung aus A4 zeigt `response.headers.get('Retry-After', 'unbekannt')`. Die v2.1-Spec dokumentiert keinen `Retry-After`-Header; die Quota-Antwort (`components/responses/quota`) liefert stattdessen im Body `errorcode` (10002), `reset_time`, `call_limit`, `limit_time_unit` und `error`.
+- Auswirkung: Der Agent erhält praktisch immer «Retry-After: unbekannt» statt des tatsächlichen Reset-Zeitpunkts und Limits; er kann nicht einschätzen, ob sich Warten lohnt.
+- Fix: Body parsen und `reset_time` sowie `call_limit`/`limit_time_unit` in die Meldung übernehmen, `Retry-After` höchstens als Fallback lesen.
 
 ## A9. HTML-Descriptions ungefiltert (Token-Ballast)
 
