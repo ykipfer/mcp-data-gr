@@ -558,13 +558,29 @@ async def export_dataset_url(
     Returns:
         Full URL to download the exported dataset
     """
+    visibility = None
+    if API_KEY:
+        # Top-level `visibility` is undocumented in the spec but returned by the live API.
+        detail = await fetch(f"/catalog/datasets/{dataset_id}")
+        visibility = detail.get("visibility") if isinstance(detail, dict) else None
+        if visibility == "restricted":
+            raise RuntimeError(
+                f"Dataset {dataset_id} ist ein Restricted dataset: Die Export-URL ist ohne "
+                "Portal API key nicht abrufbar. Daten stattdessen mit get_export holen."
+            )
     base = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
     query = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in {
         "select": select, "where": where, "group_by": group_by,
         "order_by": order_by, "limit": limit, "lang": lang,
         "use_labels": use_labels, "epsg": epsg, "compressed": compressed,
     }.items() if v is not None}
-    return f"{base}?{urlencode(query)}" if query else base
+    url = f"{base}?{urlencode(query)}" if query else base
+    if API_KEY and visibility not in ("domain", "restricted"):
+        url += (
+            "\n\nHinweis: Sichtbarkeit des Datensatzes unbekannt; die URL erfordert "
+            "evtl. Authentifizierung. Bei Problemen get_export verwenden."
+        )
+    return url
 
 
 @mcp.tool(
@@ -599,7 +615,10 @@ async def export_catalog_url(
     query = {k: v for k, v in {
         "select": select, "where": where, "order_by": order_by, "limit": limit,
     }.items() if v is not None}
-    return f"{base}?{urlencode(query)}" if query else base
+    url = f"{base}?{urlencode(query)}" if query else base
+    if API_KEY:
+        url += "\n\nHinweis: Die URL listet nur Public datasets (ohne Portal API key abgerufen)."
+    return url
 
 
 @mcp.tool(
