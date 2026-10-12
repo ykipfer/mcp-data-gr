@@ -141,6 +141,38 @@ elsewhere (e.g. the ngrok setup below), bridge to the URL with
 }
 ```
 
+### Portal API key
+
+To see your own Restricted datasets and get the extended quota of your
+account, set a personal Data portal API key in the `DATA_PORTAL_API_KEY`
+environment variable. Put it in the `env` block of the MCP client config (never
+in `.env`, which is committed):
+
+```json
+{
+  "mcpServers": {
+    "data-gr": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-data-gr", "main.py"],
+      "env": { "DATA_PORTAL_API_KEY": "<your key>" }
+    }
+  }
+}
+```
+
+- **stdio only.** A key carries its owner's full rights, so on a shared HTTP
+  endpoint every caller would act as you. The server therefore refuses to
+  start when a key is set and `MCP_TRANSPORT` is not `stdio` (this includes
+  Docker and the Pi + ngrok setup).
+- **Use a dedicated key with minimal permissions.** Create a separate key for
+  this server in your portal account and grant it only what you need, so it can
+  be revoked without side effects.
+- Restricted datasets are not open data. Export URLs do not work for them
+  (the key is sent only as a header, never in URLs); `export_dataset_url`
+  refuses them, use `get_export` instead.
+
+See `docs/adr/0001-portal-api-key-from-env-stdio-only.md` for the reasoning.
+
 ### Production (Raspberry Pi + ngrok)
 
 The server is intended to run as a background service on a host (e.g. a
