@@ -104,6 +104,14 @@ def _strip_html(text: str, max_len: int = 800) -> str:
     return text[:max_len] + ("..." if len(text) > max_len else "")
 
 
+def _access_fields(data: dict) -> dict:
+    # NOTE: `visibility` is undocumented: it is not in the spec's `dataset` schema,
+    # but the live API returns it on both the list and the detail endpoint.
+    visibility = data.get("visibility")
+    restricted = {"restricted": True, "domain": False}.get(visibility)
+    return {"restricted": restricted, "data_visible": data.get("data_visible")}
+
+
 def _simplify_dataset(data: dict) -> dict:
     metas = data.get("metas", {})
     default = metas.get("default", {})
@@ -123,6 +131,7 @@ def _simplify_dataset(data: dict) -> dict:
         "license_url": default.get("license_url"),
         "update_frequency": default.get("update_frequency"),
         "records_count": default.get("records_count") or explore.get("records_count"),
+        **_access_fields(data),
     }
 
 
@@ -245,6 +254,7 @@ async def get_dataset(dataset_id: str, lang: str = "de") -> dict:
         "modified": metas.get("default", {}).get("modified"),
         "language": _as_list(metas.get("default", {}).get("language")),
         "records_count": metas.get("default", {}).get("records_count"),
+        **_access_fields(data),
         "fields": [
             {
                 "name": f.get("name"),
